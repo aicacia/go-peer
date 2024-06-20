@@ -39,7 +39,6 @@ type OnError func(err error)
 
 type PeerOptions struct {
 	Id            string
-	Initiator     bool
 	ChannelName   string
 	ChannelConfig *webrtc.DataChannelInit
 	Config        *webrtc.Configuration
@@ -71,7 +70,6 @@ type Peer struct {
 
 func NewPeer(options ...PeerOptions) *Peer {
 	peer := Peer{
-		initiator: false,
 		config: webrtc.Configuration{
 			ICEServers: []webrtc.ICEServer{},
 		},
@@ -80,7 +78,6 @@ func NewPeer(options ...PeerOptions) *Peer {
 		if option.Id != "" {
 			peer.id = option.Id
 		}
-		peer.initiator = option.Initiator
 		if option.ChannelName != "" {
 			peer.channelName = option.ChannelName
 		}
@@ -138,6 +135,7 @@ func (peer *Peer) Send(data []byte) error {
 }
 
 func (peer *Peer) Init() error {
+	peer.initiator = true
 	err := peer.createPeer()
 	if err != nil {
 		return err
@@ -400,8 +398,6 @@ func (peer *Peer) onDataChannelError(err error) {
 func (peer *Peer) onDataChannelOpen() {
 	peer.connect()
 }
-
-// onDataChannelMessage is called when a message is received from the data channel
 
 func (peer *Peer) onDataChannelMessage(message webrtc.DataChannelMessage) {
 	for _, fn := range peer.onData {
