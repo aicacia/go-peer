@@ -1,4 +1,4 @@
-module github.com/aicacia/go-simple-peer
+module github.com/aicacia/go-simplepeer
 
 go 1.19
 
