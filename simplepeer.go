@@ -3,7 +3,7 @@ package simplepeer
 import (
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 
 	"github.com/google/uuid"
@@ -38,6 +38,7 @@ type SignalMessageTransceiver struct {
 type OnSignal func(data SignalMessage) error
 type OnConnect func()
 type OnData func(message webrtc.DataChannelMessage)
+type OnError func(err error)
 
 type PeerOptions struct {
 	Id            string
@@ -50,6 +51,7 @@ type PeerOptions struct {
 	OnSignal      OnSignal
 	OnConnect     OnConnect
 	OnData        OnData
+	OnError       OnError
 }
 
 type Peer struct {
@@ -66,6 +68,7 @@ type Peer struct {
 	onSignal          OnSignal
 	onConnect         []OnConnect
 	onData            []OnData
+	onError           []OnError
 	pendingCandidates []webrtc.ICECandidateInit
 }
 
@@ -105,6 +108,9 @@ func NewPeer(options ...PeerOptions) *Peer {
 		if option.OnData != nil {
 			peer.onData = append(peer.onData, option.OnData)
 		}
+		if option.OnError != nil {
+			peer.onError = append(peer.onError, option.OnError)
+		}
 	}
 	if peer.channelName == "" {
 		peer.channelName = uuid.New().String()
@@ -134,12 +140,40 @@ func (peer *Peer) Init() error {
 	return peer.needsNegotiation()
 }
 
+func (peer *Peer) SetOnSignal(fn OnSignal) {
+	peer.onSignal = fn
+}
+
+func (peer *Peer) AddOnConnect(fn OnConnect) {
+	peer.onConnect = append(peer.onConnect, fn)
+}
+
+func (peer *Peer) RemoveOnConnect(fn OnConnect) {
+	for i, onConnect := range peer.onConnect {
+		if &onConnect == &fn {
+			peer.onConnect = append(peer.onConnect[:i], peer.onConnect[i+1:]...)
+		}
+	}
+}
+
+func (peer *Peer) AddOnData(fn OnData) {
+	peer.onData = append(peer.onData, fn)
+}
+
+func (peer *Peer) RemoveOnData(fn OnData) {
+	for i, onData := range peer.onData {
+		if &onData == &fn {
+			peer.onData = append(peer.onData[:i], peer.onData[i+1:]...)
+		}
+	}
+}
+
 func (peer *Peer) createPeer() error {
 	err := peer.Close()
 	if err != nil {
 		return err
 	}
-	log.Printf("%s: creating peer", peer.id)
+	slog.Debug(fmt.Sprintf("%s: creating peer", peer.id))
 	peer.connection, err = webrtc.NewPeerConnection(peer.config)
 	if err != nil {
 		return err
@@ -157,7 +191,7 @@ func (peer *Peer) createPeer() error {
 	} else {
 		peer.connection.OnDataChannel(peer.onDataChannel)
 	}
-	log.Printf("%s: created peer", peer.id)
+	slog.Debug(fmt.Sprintf("%s: created peer", peer.id))
 	return nil
 }
 
@@ -168,7 +202,7 @@ func (peer *Peer) Signal(message SignalMessage) error {
 			return err
 		}
 	}
-	log.Printf("%s: received signal type=%v", peer.id, message.Type)
+	slog.Debug(fmt.Sprintf("%s: received signal type=%v", peer.id, message.Type))
 	switch message.Type {
 	case SignalMessageRenegotiate:
 		return peer.needsNegotiation()
@@ -219,14 +253,14 @@ func (peer *Peer) Signal(message SignalMessage) error {
 		if err := decoder.Decode(message.Data); err != nil {
 			return err
 		}
-		log.Printf("%s: setting remote sdp", peer.id)
+		slog.Debug(fmt.Sprintf("%s: setting remote sdp", peer.id))
 		if err := peer.connection.SetRemoteDescription(sdp); err != nil {
 			return err
 		}
 		peer.lock.Lock()
 		for _, candidate := range peer.pendingCandidates {
 			if err := peer.connection.AddICECandidate(candidate); err != nil {
-				log.Printf("%s: error adding ice candidate: %s", peer.id, err)
+				slog.Debug(fmt.Sprintf("%s: error adding ice candidate: %s", peer.id, err))
 			}
 		}
 		peer.pendingCandidates = nil
@@ -240,34 +274,6 @@ func (peer *Peer) Signal(message SignalMessage) error {
 		return nil
 	}
 	return errInvalidSignalMessage
-}
-
-func (peer *Peer) SetOnSignal(fn OnSignal) {
-	peer.onSignal = fn
-}
-
-func (peer *Peer) AddOnConnect(fn OnConnect) {
-	peer.onConnect = append(peer.onConnect, fn)
-}
-
-func (peer *Peer) RemoveOnConnect(fn OnConnect) {
-	for i, onConnect := range peer.onConnect {
-		if &onConnect == &fn {
-			peer.onConnect = append(peer.onConnect[:i], peer.onConnect[i+1:]...)
-		}
-	}
-}
-
-func (peer *Peer) AddOnData(fn OnData) {
-	peer.onData = append(peer.onData, fn)
-}
-
-func (peer *Peer) RemoveOnData(fn OnData) {
-	for i, onData := range peer.onData {
-		if &onData == &fn {
-			peer.onData = append(peer.onData[:i], peer.onData[i+1:]...)
-		}
-	}
 }
 
 func (peer *Peer) Close() error {
@@ -310,7 +316,7 @@ func (peer *Peer) createOffer() error {
 	if peer.connection == nil {
 		return errConnectionNotInitialized
 	}
-	log.Printf("%s: creating offer", peer.id)
+	slog.Debug(fmt.Sprintf("%s: creating offer", peer.id))
 	offer, err := peer.connection.CreateOffer(peer.offerConfig)
 	if err != nil {
 		return err
@@ -318,7 +324,7 @@ func (peer *Peer) createOffer() error {
 	if err := peer.connection.SetLocalDescription(offer); err != nil {
 		return err
 	}
-	log.Printf("%s: created offer", peer.id)
+	slog.Debug(fmt.Sprintf("%s: created offer", peer.id))
 	return peer.onSignal(SignalMessage{
 		Type: SignalMessageSdp,
 		Data: toJSON(offer),
@@ -329,7 +335,7 @@ func (peer *Peer) createAnswer() error {
 	if peer.connection == nil {
 		return errConnectionNotInitialized
 	}
-	log.Printf("%s: creating answer", peer.id)
+	slog.Debug(fmt.Sprintf("%s: creating answer", peer.id))
 	answer, err := peer.connection.CreateAnswer(peer.answerConfig)
 	if err != nil {
 		return err
@@ -337,7 +343,7 @@ func (peer *Peer) createAnswer() error {
 	if err := peer.connection.SetLocalDescription(answer); err != nil {
 		return err
 	}
-	log.Printf("%s: created answer", peer.id)
+	slog.Debug(fmt.Sprintf("%s: created answer", peer.id))
 	return peer.onSignal(SignalMessage{
 		Type: SignalMessageSdp,
 		Data: toJSON(answer),
@@ -350,8 +356,14 @@ func (peer *Peer) connect() {
 	}
 }
 
+func (peer *Peer) error(err error) {
+	for _, fn := range peer.onError {
+		fn(err)
+	}
+}
+
 func (peer *Peer) onDataChannelError(err error) {
-	log.Printf("%s: data channel error: %s", peer.id, err)
+	peer.error(err)
 }
 
 func (peer *Peer) onDataChannelOpen() {
@@ -369,21 +381,21 @@ func (peer *Peer) onDataChannelMessage(message webrtc.DataChannelMessage) {
 func (peer *Peer) onConnectionStateChange(pcs webrtc.PeerConnectionState) {
 	switch pcs {
 	case webrtc.PeerConnectionStateUnknown:
-		log.Printf("%s: connection state unknown", peer.id)
+		slog.Debug(fmt.Sprintf("%s: connection state unknown", peer.id))
 	case webrtc.PeerConnectionStateNew:
-		log.Printf("%s: connection new", peer.id)
+		slog.Debug(fmt.Sprintf("%s: connection new", peer.id))
 	case webrtc.PeerConnectionStateConnecting:
-		log.Printf("%s: connecting", peer.id)
+		slog.Debug(fmt.Sprintf("%s: connecting", peer.id))
 	case webrtc.PeerConnectionStateConnected:
-		log.Printf("%s: connection established", peer.id)
+		slog.Debug(fmt.Sprintf("%s: connection established", peer.id))
 	case webrtc.PeerConnectionStateDisconnected:
-		log.Printf("%s: connection disconnected", peer.id)
+		slog.Debug(fmt.Sprintf("%s: connection disconnected", peer.id))
 		peer.Close()
 	case webrtc.PeerConnectionStateFailed:
-		log.Printf("%s: connection failed", peer.id)
+		slog.Debug(fmt.Sprintf("%s: connection failed", peer.id))
 		peer.Close()
 	case webrtc.PeerConnectionStateClosed:
-		log.Printf("%s: connection closed", peer.id)
+		slog.Debug(fmt.Sprintf("%s: connection closed", peer.id))
 		peer.Close()
 	}
 }
@@ -403,7 +415,7 @@ func (peer *Peer) onICECandidate(pendingCandidate *webrtc.ICECandidate) {
 			Data: toJSON(iceCandidateInit),
 		})
 		if err != nil {
-			log.Printf("%s: error sending ice candidate: %s", peer.id, err)
+			slog.Debug(fmt.Sprintf("%s: error sending ice candidate: %s", peer.id, err))
 		}
 	}
 }

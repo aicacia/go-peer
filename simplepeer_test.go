@@ -1,12 +1,18 @@
 package simplepeer
 
 import (
+	"log/slog"
+	"os"
 	"testing"
 
 	"github.com/pion/webrtc/v4"
 )
 
 func TestSimplePeer(t *testing.T) {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})))
+
 	peer1Connect := make(chan bool)
 	peer2Connect := make(chan bool)
 	peer1Data := make(chan []byte)
