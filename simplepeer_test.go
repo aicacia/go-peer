@@ -23,8 +23,8 @@ func TestSimplePeer(t *testing.T) {
 	var peer1, peer2 *Peer
 	peer1 = NewPeer(PeerOptions{
 		Id: "peer1",
-		OnSignal: func(data SignalMessage) error {
-			return peer2.Signal(data)
+		OnSignal: func(messageType string, messageData []byte) error {
+			return peer2.Signal(messageType, messageData)
 		},
 		OnConnect: func() {
 			peer1Connect <- true
@@ -40,8 +40,8 @@ func TestSimplePeer(t *testing.T) {
 	})
 	peer2 = NewPeer(PeerOptions{
 		Id: "peer2",
-		OnSignal: func(data SignalMessage) error {
-			return peer1.Signal(data)
+		OnSignal: func(messageType string, messageData []byte) error {
+			return peer1.Signal(messageType, messageData)
 		},
 		OnConnect: func() {
 			peer2Connect <- true
