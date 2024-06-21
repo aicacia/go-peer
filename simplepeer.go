@@ -36,6 +36,7 @@ type OnSignal func(data map[string]interface{}) error
 type OnConnect func()
 type OnData func(message webrtc.DataChannelMessage)
 type OnError func(err error)
+type OnClose func()
 
 type PeerOptions struct {
 	Id            string
@@ -48,24 +49,26 @@ type PeerOptions struct {
 	OnConnect     OnConnect
 	OnData        OnData
 	OnError       OnError
+	OnClose       OnClose
 }
 
 type Peer struct {
-	lock              sync.Mutex
-	id                string
-	initiator         bool
-	channelName       string
-	channelConfig     *webrtc.DataChannelInit
-	channel           *webrtc.DataChannel
-	config            webrtc.Configuration
-	connection        *webrtc.PeerConnection
-	offerConfig       *webrtc.OfferOptions
-	answerConfig      *webrtc.AnswerOptions
-	onSignal          OnSignal
-	onConnect         []OnConnect
-	onData            []OnData
-	onError           []OnError
-	pendingCandidates []webrtc.ICECandidateInit
+	id                    string
+	initiator             bool
+	channelName           string
+	channelConfig         *webrtc.DataChannelInit
+	channel               *webrtc.DataChannel
+	config                webrtc.Configuration
+	connection            *webrtc.PeerConnection
+	offerConfig           *webrtc.OfferOptions
+	answerConfig          *webrtc.AnswerOptions
+	onSignal              OnSignal
+	onConnect             []OnConnect
+	onData                []OnData
+	onError               []OnError
+	onClose               []OnClose
+	pendingCandidatesLock sync.Mutex
+	pendingCandidates     []webrtc.ICECandidateInit
 }
 
 func NewPeer(options ...PeerOptions) *Peer {
@@ -104,6 +107,9 @@ func NewPeer(options ...PeerOptions) *Peer {
 		}
 		if option.OnError != nil {
 			peer.onError = append(peer.onError, option.OnError)
+		}
+		if option.OnClose != nil {
+			peer.onClose = append(peer.onClose, option.OnClose)
 		}
 	}
 	if peer.channelName == "" {
@@ -183,6 +189,18 @@ func (peer *Peer) OffError(fn OnError) {
 	}
 }
 
+func (peer *Peer) OnClose(fn OnClose) {
+	peer.onClose = append(peer.onClose, fn)
+}
+
+func (peer *Peer) OffClose(fn OnClose) {
+	for i, onClose := range peer.onClose {
+		if &onClose == &fn {
+			peer.onClose = append(peer.onClose[:i], peer.onClose[i+1:]...)
+		}
+	}
+}
+
 func (peer *Peer) Signal(message SignalMessage) error {
 	if peer.connection == nil {
 		err := peer.createPeer()
@@ -258,14 +276,14 @@ func (peer *Peer) Signal(message SignalMessage) error {
 			if err := peer.connection.SetRemoteDescription(sdp); err != nil {
 				return err
 			}
-			peer.lock.Lock()
+			peer.pendingCandidatesLock.Lock()
 			for _, candidate := range peer.pendingCandidates {
 				if err := peer.connection.AddICECandidate(candidate); err != nil {
 					slog.Debug(fmt.Sprintf("%s: error adding ice candidate: %s", peer.id, err))
 				}
 			}
 			peer.pendingCandidates = nil
-			peer.lock.Unlock()
+			peer.pendingCandidatesLock.Unlock()
 			if peer.connection.RemoteDescription().Type == webrtc.SDPTypeOffer {
 				err = peer.createAnswer()
 				if err != nil {
@@ -279,20 +297,31 @@ func (peer *Peer) Signal(message SignalMessage) error {
 }
 
 func (peer *Peer) Close() error {
+	return peer.close(false)
+}
+
+func (peer *Peer) close(triggerCallbacks bool) error {
 	var err1, err2 error
 	if peer.connection != nil {
 		err1 = peer.connection.Close()
 		peer.connection = nil
+		triggerCallbacks = true
 	}
 	if peer.channel != nil {
 		err2 = peer.channel.Close()
 		peer.channel = nil
+		triggerCallbacks = true
+	}
+	if triggerCallbacks {
+		for _, fn := range peer.onClose {
+			fn()
+		}
 	}
 	return errors.Join(err1, err2)
 }
 
 func (peer *Peer) createPeer() error {
-	err := peer.Close()
+	err := peer.close(false)
 	if err != nil {
 		return err
 	}
@@ -417,13 +446,13 @@ func (peer *Peer) onConnectionStateChange(pcs webrtc.PeerConnectionState) {
 		slog.Debug(fmt.Sprintf("%s: connection established", peer.id))
 	case webrtc.PeerConnectionStateDisconnected:
 		slog.Debug(fmt.Sprintf("%s: connection disconnected", peer.id))
-		peer.Close()
+		peer.close(true)
 	case webrtc.PeerConnectionStateFailed:
 		slog.Debug(fmt.Sprintf("%s: connection failed", peer.id))
-		peer.Close()
+		peer.close(true)
 	case webrtc.PeerConnectionStateClosed:
 		slog.Debug(fmt.Sprintf("%s: connection closed", peer.id))
-		peer.Close()
+		peer.close(true)
 	}
 }
 
@@ -432,9 +461,9 @@ func (peer *Peer) onICECandidate(pendingCandidate *webrtc.ICECandidate) {
 		return
 	}
 	if peer.connection.RemoteDescription() == nil {
-		peer.lock.Lock()
-		defer peer.lock.Unlock()
+		peer.pendingCandidatesLock.Lock()
 		peer.pendingCandidates = append(peer.pendingCandidates, pendingCandidate.ToJSON())
+		peer.pendingCandidatesLock.Unlock()
 	} else {
 		iceCandidateInit := pendingCandidate.ToJSON()
 		err := peer.onSignal(SignalMessage{

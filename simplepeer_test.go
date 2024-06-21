@@ -15,6 +15,8 @@ func TestSimplePeer(t *testing.T) {
 
 	peer1Connect := make(chan bool)
 	peer2Connect := make(chan bool)
+	peer1Close := make(chan bool)
+	peer2Close := make(chan bool)
 	peer1Data := make(chan []byte)
 	peer2Data := make(chan []byte)
 
@@ -30,8 +32,12 @@ func TestSimplePeer(t *testing.T) {
 		OnData: func(message webrtc.DataChannelMessage) {
 			peer1Data <- message.Data
 		},
+		OnClose: func() {
+			go func() {
+				peer1Close <- true
+			}()
+		},
 	})
-	defer peer1.Close()
 	peer2 = NewPeer(PeerOptions{
 		Id: "peer2",
 		OnSignal: func(data SignalMessage) error {
@@ -43,8 +49,12 @@ func TestSimplePeer(t *testing.T) {
 		OnData: func(message webrtc.DataChannelMessage) {
 			peer2Data <- message.Data
 		},
+		OnClose: func() {
+			go func() {
+				peer2Close <- true
+			}()
+		},
 	})
-	defer peer2.Close()
 	err := peer1.Init()
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +64,7 @@ func TestSimplePeer(t *testing.T) {
 	peer2Connected := <-peer2Connect
 
 	if !peer1Connected || !peer2Connected {
-		t.Fatal("peer did not connect")
+		t.Fatal("peers did not connect")
 	}
 
 	err = peer1.Send([]byte("Hello"))
@@ -72,5 +82,16 @@ func TestSimplePeer(t *testing.T) {
 	peer1DataReceived := <-peer1Data
 	if string(peer1DataReceived) != "World" {
 		t.Fatalf("expected 'World', got '%s'", string(peer1DataReceived))
+	}
+
+	if err := peer1.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	peer1Closed := <-peer1Close
+	peer2Closed := <-peer2Close
+
+	if !peer1Closed || !peer2Closed {
+		t.Fatal("peers did not close")
 	}
 }
