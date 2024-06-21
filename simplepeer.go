@@ -23,12 +23,17 @@ const (
 	SignalMessageSdp                = "sdp"
 )
 
+type SignalMessage struct {
+	Type string      `json:"type"`
+	Data interface{} `json:"data"`
+}
+
 type SignalMessageTransceiver struct {
 	Kind webrtc.RTPCodecType         `json:"kind"`
 	Init []webrtc.RTPTransceiverInit `json:"init"`
 }
 
-type OnSignal func(messageType string, messageData []byte) error
+type OnSignal func(message SignalMessage) error
 type OnConnect func()
 type OnData func(message webrtc.DataChannelMessage)
 type OnError func(err error)
@@ -197,27 +202,31 @@ func (peer *Peer) OffClose(fn OnClose) {
 	}
 }
 
-func (peer *Peer) Signal(messageType string, messageData []byte) error {
+func (peer *Peer) Signal(message SignalMessage) error {
 	if peer.connection == nil {
 		err := peer.createPeer()
 		if err != nil {
 			return err
 		}
 	}
-	slog.Debug(fmt.Sprintf("%s: received signal type=%v", peer.id, messageType))
-	switch messageType {
+	slog.Debug(fmt.Sprintf("%s: received signal type=%v", peer.id, message.Type))
+	dataBytes, err := json.Marshal(message.Data)
+	if err != nil {
+		return err
+	}
+	switch message.Type {
 	case SignalMessageRenegotiate:
 		return peer.needsNegotiation()
 	case SignalMessageTransceiverRequest:
 		var transceiver SignalMessageTransceiver
-		if err := json.Unmarshal(messageData, &transceiver); err != nil {
+		if err := json.Unmarshal(dataBytes, &transceiver); err != nil {
 			return nil
 		}
 		_, err := peer.connection.AddTransceiverFromKind(transceiver.Kind, transceiver.Init...)
 		return err
 	case SignalMessageCandidate:
 		var candidate webrtc.ICECandidateInit
-		if err := json.Unmarshal(messageData, &candidate); err != nil {
+		if err := json.Unmarshal(dataBytes, &candidate); err != nil {
 			return nil
 		}
 		if peer.connection.RemoteDescription() == nil {
@@ -228,7 +237,7 @@ func (peer *Peer) Signal(messageType string, messageData []byte) error {
 		}
 	case SignalMessageSdp:
 		var sdp webrtc.SessionDescription
-		if err := json.Unmarshal(messageData, &sdp); err != nil {
+		if err := json.Unmarshal(dataBytes, &sdp); err != nil {
 			return nil
 		}
 		slog.Debug(fmt.Sprintf("%s: setting remote sdp", peer.id))
@@ -251,7 +260,7 @@ func (peer *Peer) Signal(messageType string, messageData []byte) error {
 		}
 		return nil
 	default:
-		slog.Debug(fmt.Sprintf("%s: invalid signal type: %v", peer.id, messageType))
+		slog.Debug(fmt.Sprintf("%s: invalid signal type: %v", peer.id, message.Type))
 		return errInvalidSignalMessageType
 	}
 }
@@ -324,7 +333,9 @@ func (peer *Peer) negotiate() error {
 	if peer.initiator {
 		return peer.createOffer()
 	} else {
-		return peer.onSignal(SignalMessageRenegotiate, nil)
+		return peer.onSignal(SignalMessage{
+			Type: SignalMessageRenegotiate,
+		})
 	}
 }
 
@@ -341,11 +352,14 @@ func (peer *Peer) createOffer() error {
 		return err
 	}
 	slog.Debug(fmt.Sprintf("%s: created offer", peer.id))
-	offerBytes, err := json.Marshal(offer)
+	offerJSON, err := toJSON(offer)
 	if err != nil {
 		return err
 	}
-	return peer.onSignal(SignalMessageSdp, offerBytes)
+	return peer.onSignal(SignalMessage{
+		Type: SignalMessageSdp,
+		Data: offerJSON,
+	})
 }
 
 func (peer *Peer) createAnswer() error {
@@ -361,11 +375,14 @@ func (peer *Peer) createAnswer() error {
 		return err
 	}
 	slog.Debug(fmt.Sprintf("%s: created answer", peer.id))
-	answerBytes, err := json.Marshal(answer)
+	answerJSON, err := toJSON(answer)
 	if err != nil {
 		return err
 	}
-	return peer.onSignal(SignalMessageSdp, answerBytes)
+	return peer.onSignal(SignalMessage{
+		Type: SignalMessageSdp,
+		Data: answerJSON,
+	})
 }
 
 func (peer *Peer) connect() {
@@ -426,12 +443,15 @@ func (peer *Peer) onICECandidate(pendingCandidate *webrtc.ICECandidate) {
 		peer.pendingCandidatesLock.Unlock()
 	} else {
 		iceCandidateInit := pendingCandidate.ToJSON()
-		iceCandidateInitBytes, err := json.Marshal(iceCandidateInit)
+		iceCandidateInitJSON, err := toJSON(iceCandidateInit)
 		if err != nil {
 			slog.Error(fmt.Sprintf("%s: error marshaling ice candidate: %s", peer.id, err))
 			return
 		}
-		if err := peer.onSignal(SignalMessageCandidate, iceCandidateInitBytes); err != nil {
+		if err := peer.onSignal(SignalMessage{
+			Type: SignalMessageCandidate,
+			Data: iceCandidateInitJSON,
+		}); err != nil {
 			slog.Error(fmt.Sprintf("%s: error sending ice candidate: %s", peer.id, err))
 		}
 	}
@@ -442,4 +462,16 @@ func (peer *Peer) onDataChannel(dc *webrtc.DataChannel) {
 	peer.channel.OnError(peer.onDataChannelError)
 	peer.channel.OnOpen(peer.onDataChannelOpen)
 	peer.channel.OnMessage(peer.onDataChannelMessage)
+}
+
+func toJSON(v interface{}) (map[string]interface{}, error) {
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return nil, err
+	}
+	return decoded, nil
 }
