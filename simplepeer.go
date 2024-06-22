@@ -5,8 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
 
+	atomicvalue "github.com/aicacia/go-atomic-value"
+	"github.com/aicacia/go-cslice"
 	"github.com/google/uuid"
 	"github.com/pion/webrtc/v4"
 )
@@ -58,23 +59,22 @@ type PeerOptions struct {
 }
 
 type Peer struct {
-	id                    string
-	initiator             bool
-	channelName           string
-	channelConfig         *webrtc.DataChannelInit
-	channel               *webrtc.DataChannel
-	config                webrtc.Configuration
-	connection            *webrtc.PeerConnection
-	offerConfig           *webrtc.OfferOptions
-	answerConfig          *webrtc.AnswerOptions
-	onSignal              OnSignal
-	onConnect             []OnConnect
-	onData                []OnData
-	onError               []OnError
-	onClose               []OnClose
-	onTransceiver         []OnTransceiver
-	pendingCandidatesLock sync.Mutex
-	pendingCandidates     []webrtc.ICECandidateInit
+	id                string
+	initiator         bool
+	channelName       string
+	channelConfig     *webrtc.DataChannelInit
+	channel           *webrtc.DataChannel
+	config            webrtc.Configuration
+	connection        *webrtc.PeerConnection
+	offerConfig       *webrtc.OfferOptions
+	answerConfig      *webrtc.AnswerOptions
+	onSignal          atomicvalue.AtomicValue[OnSignal]
+	onConnect         cslice.CSlice[OnConnect]
+	onData            cslice.CSlice[OnData]
+	onError           cslice.CSlice[OnError]
+	onClose           cslice.CSlice[OnClose]
+	onTransceiver     cslice.CSlice[OnTransceiver]
+	pendingCandidates cslice.CSlice[webrtc.ICECandidateInit]
 }
 
 func NewPeer(options ...PeerOptions) *Peer {
@@ -103,22 +103,22 @@ func NewPeer(options ...PeerOptions) *Peer {
 			peer.offerConfig = option.OfferConfig
 		}
 		if option.OnSignal != nil {
-			peer.onSignal = option.OnSignal
+			peer.onSignal.Store(option.OnSignal)
 		}
 		if option.OnConnect != nil {
-			peer.onConnect = append(peer.onConnect, option.OnConnect)
+			peer.onConnect.Append(option.OnConnect)
 		}
 		if option.OnData != nil {
-			peer.onData = append(peer.onData, option.OnData)
+			peer.onData.Append(option.OnData)
 		}
 		if option.OnError != nil {
-			peer.onError = append(peer.onError, option.OnError)
+			peer.onError.Append(option.OnError)
 		}
 		if option.OnClose != nil {
-			peer.onClose = append(peer.onClose, option.OnClose)
+			peer.onClose.Append(option.OnClose)
 		}
 		if option.OnTransceiver != nil {
-			peer.onTransceiver = append(peer.onTransceiver, option.OnTransceiver)
+			peer.onTransceiver.Append(option.OnTransceiver)
 		}
 	}
 	if peer.channelName == "" {
@@ -140,6 +140,10 @@ func (peer *Peer) Connection() *webrtc.PeerConnection {
 
 func (peer *Peer) Channel() *webrtc.DataChannel {
 	return peer.channel
+}
+
+func (peer *Peer) Initiator() bool {
+	return peer.initiator
 }
 
 func (peer *Peer) Send(data []byte) error {
@@ -177,7 +181,7 @@ func (peer *Peer) AddTransceiverFromKind(kind webrtc.RTPCodecType, init ...webrt
 				"sendEncodings": transceiverInit.SendEncodings,
 			})
 		}
-		err := peer.onSignal(SignalMessage{
+		err := peer.onSignal.Load()(SignalMessage{
 			"type": SignalMessageTransceiverRequest,
 			"transceiverRequest": map[string]interface{}{
 				"kind": kind.String(),
@@ -207,7 +211,7 @@ func (peer *Peer) AddTransceiverFromTrack(track webrtc.TrackLocal, init ...webrt
 				"sendEncodings": transceiverInit.SendEncodings,
 			})
 		}
-		err := peer.onSignal(SignalMessage{
+		err := peer.onSignal.Load()(SignalMessage{
 			"type": SignalMessageTransceiverRequest,
 			"transceiverRequest": map[string]interface{}{
 				"kind": track.Kind().String(),
@@ -219,67 +223,77 @@ func (peer *Peer) AddTransceiverFromTrack(track webrtc.TrackLocal, init ...webrt
 }
 
 func (peer *Peer) OnSignal(fn OnSignal) {
-	peer.onSignal = fn
+	peer.onSignal.Store(fn)
 }
 
 func (peer *Peer) OnConnect(fn OnConnect) {
-	peer.onConnect = append(peer.onConnect, fn)
+	peer.onConnect.Append(fn)
 }
 
 func (peer *Peer) OffConnect(fn OnConnect) {
-	for i, onConnect := range peer.onConnect {
+	peer.onConnect.Range(func(index int, onConnect OnConnect) bool {
 		if &onConnect == &fn {
-			peer.onConnect = append(peer.onConnect[:i], peer.onConnect[i+1:]...)
+			peer.onConnect.Remove(index)
+			return false
 		}
-	}
+		return true
+	})
 }
 
 func (peer *Peer) OnData(fn OnData) {
-	peer.onData = append(peer.onData, fn)
+	peer.onData.Append(fn)
 }
 
 func (peer *Peer) OffData(fn OnData) {
-	for i, onData := range peer.onData {
+	peer.onData.Range(func(index int, onData OnData) bool {
 		if &onData == &fn {
-			peer.onData = append(peer.onData[:i], peer.onData[i+1:]...)
+			peer.onData.Remove(index)
+			return false
 		}
-	}
+		return true
+	})
 }
 
 func (peer *Peer) OnError(fn OnError) {
-	peer.onError = append(peer.onError, fn)
+	peer.onError.Append(fn)
 }
 
 func (peer *Peer) OffError(fn OnError) {
-	for i, onError := range peer.onError {
+	peer.onError.Range(func(index int, onError OnError) bool {
 		if &onError == &fn {
-			peer.onError = append(peer.onError[:i], peer.onError[i+1:]...)
+			peer.onError.Remove(index)
+			return false
 		}
-	}
+		return true
+	})
 }
 
 func (peer *Peer) OnClose(fn OnClose) {
-	peer.onClose = append(peer.onClose, fn)
+	peer.onClose.Append(fn)
 }
 
 func (peer *Peer) OffClose(fn OnClose) {
-	for i, onClose := range peer.onClose {
+	peer.onClose.Range(func(index int, onClose OnClose) bool {
 		if &onClose == &fn {
-			peer.onClose = append(peer.onClose[:i], peer.onClose[i+1:]...)
+			peer.onClose.Remove(index)
+			return false
 		}
-	}
+		return true
+	})
 }
 
 func (peer *Peer) OnTransceiver(fn OnTransceiver) {
-	peer.onTransceiver = append(peer.onTransceiver, fn)
+	peer.onTransceiver.Append(fn)
 }
 
 func (peer *Peer) OffTransceiver(fn OnTransceiver) {
-	for i, onTransceiver := range peer.onTransceiver {
+	peer.onTransceiver.Range(func(index int, onTransceiver OnTransceiver) bool {
 		if &onTransceiver == &fn {
-			peer.onTransceiver = append(peer.onTransceiver[:i], peer.onTransceiver[i+1:]...)
+			peer.onTransceiver.Remove(index)
+			return false
 		}
-	}
+		return true
+	})
 }
 
 func (peer *Peer) Signal(message SignalMessage) error {
@@ -362,7 +376,7 @@ func (peer *Peer) Signal(message SignalMessage) error {
 			candidate.UsernameFragment = &usernameFragmentRaw
 		}
 		if peer.connection.RemoteDescription() == nil {
-			peer.pendingCandidates = append(peer.pendingCandidates, candidate)
+			peer.pendingCandidates.Append(candidate)
 			return nil
 		} else {
 			return peer.connection.AddICECandidate(candidate)
@@ -386,21 +400,24 @@ func (peer *Peer) Signal(message SignalMessage) error {
 		if err := peer.connection.SetRemoteDescription(sdp); err != nil {
 			return err
 		}
-		peer.pendingCandidatesLock.Lock()
-		for _, candidate := range peer.pendingCandidates {
+		var errs []error
+		for candidate := range peer.pendingCandidates.Iter() {
 			if err := peer.connection.AddICECandidate(candidate); err != nil {
-				peer.error(err)
+				errs = append(errs, err)
 			}
 		}
-		peer.pendingCandidates = nil
-		peer.pendingCandidatesLock.Unlock()
-		if peer.connection.RemoteDescription().Type == webrtc.SDPTypeOffer {
+		peer.pendingCandidates.Clear()
+		remoteDescription := peer.connection.RemoteDescription()
+		if remoteDescription == nil {
+			return webrtc.ErrNoRemoteDescription
+		}
+		if remoteDescription.Type == webrtc.SDPTypeOffer {
 			err := peer.createAnswer()
 			if err != nil {
-				return err
+				errs = append(errs, err)
 			}
 		}
-		return nil
+		return errors.Join(errs...)
 	default:
 		slog.Debug(fmt.Sprintf("%s: invalid signal type: %+v", peer.id, message))
 		return errInvalidSignalMessageType
@@ -424,7 +441,7 @@ func (peer *Peer) close(triggerCallbacks bool) error {
 		triggerCallbacks = true
 	}
 	if triggerCallbacks {
-		for _, fn := range peer.onClose {
+		for fn := range peer.onClose.Iter() {
 			go fn()
 		}
 	}
@@ -476,7 +493,7 @@ func (peer *Peer) negotiate() error {
 	if peer.initiator {
 		return peer.createOffer()
 	} else {
-		return peer.onSignal(SignalMessage{
+		return peer.onSignal.Load()(SignalMessage{
 			"type":        SignalMessageRenegotiate,
 			"renegotiate": true,
 		})
@@ -500,7 +517,7 @@ func (peer *Peer) createOffer() error {
 		return err
 	}
 	slog.Debug(fmt.Sprintf("%s: created offer: %+v", peer.id, offerJSON))
-	return peer.onSignal(offerJSON)
+	return peer.onSignal.Load()(offerJSON)
 }
 
 func (peer *Peer) createAnswer() error {
@@ -520,18 +537,18 @@ func (peer *Peer) createAnswer() error {
 		return err
 	}
 	slog.Debug(fmt.Sprintf("%s: created answer: %+v", peer.id, answerJSON))
-	return peer.onSignal(answerJSON)
+	return peer.onSignal.Load()(answerJSON)
 }
 
 func (peer *Peer) connect() {
-	for _, fn := range peer.onConnect {
+	for fn := range peer.onConnect.Iter() {
 		go fn()
 	}
 }
 
 func (peer *Peer) error(err error) {
 	handled := false
-	for _, fn := range peer.onError {
+	for fn := range peer.onError.Iter() {
 		go fn(err)
 		handled = true
 	}
@@ -541,7 +558,7 @@ func (peer *Peer) error(err error) {
 }
 
 func (peer *Peer) transceiver(transceiver *webrtc.RTPTransceiver) {
-	for _, fn := range peer.onTransceiver {
+	for fn := range peer.onTransceiver.Iter() {
 		go fn(transceiver)
 	}
 }
@@ -555,7 +572,7 @@ func (peer *Peer) onDataChannelOpen() {
 }
 
 func (peer *Peer) onDataChannelMessage(message webrtc.DataChannelMessage) {
-	for _, fn := range peer.onData {
+	for fn := range peer.onData.Iter() {
 		go fn(message)
 	}
 }
@@ -587,9 +604,7 @@ func (peer *Peer) onICECandidate(pendingCandidate *webrtc.ICECandidate) {
 		return
 	}
 	if peer.connection.RemoteDescription() == nil {
-		peer.pendingCandidatesLock.Lock()
-		peer.pendingCandidates = append(peer.pendingCandidates, pendingCandidate.ToJSON())
-		peer.pendingCandidatesLock.Unlock()
+		peer.pendingCandidates.Append(pendingCandidate.ToJSON())
 	} else {
 		iceCandidateInit := pendingCandidate.ToJSON()
 		iceCandidateInitJSON, err := toJSON(iceCandidateInit)
@@ -597,7 +612,7 @@ func (peer *Peer) onICECandidate(pendingCandidate *webrtc.ICECandidate) {
 			peer.error(err)
 			return
 		}
-		err = peer.onSignal(SignalMessage{
+		err = peer.onSignal.Load()(SignalMessage{
 			"type":      SignalMessageCandidate,
 			"candidate": iceCandidateInitJSON,
 		})
@@ -613,11 +628,13 @@ func (peer *Peer) onNegotiationNeeded() {
 	}
 }
 
-func (peer *Peer) onDataChannel(dc *webrtc.DataChannel) {
-	peer.channel = dc
-	peer.channel.OnError(peer.onDataChannelError)
-	peer.channel.OnOpen(peer.onDataChannelOpen)
-	peer.channel.OnMessage(peer.onDataChannelMessage)
+func (peer *Peer) onDataChannel(channel *webrtc.DataChannel) {
+	if channel != nil {
+		peer.channel = channel
+		peer.channel.OnError(peer.onDataChannelError)
+		peer.channel.OnOpen(peer.onDataChannelOpen)
+		peer.channel.OnMessage(peer.onDataChannelMessage)
+	}
 }
 
 func toJSON(v interface{}) (map[string]interface{}, error) {
