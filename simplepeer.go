@@ -13,6 +13,7 @@ import (
 
 var (
 	errInvalidSignalMessageType = fmt.Errorf("invalid signal message type")
+	errInvalidSignalMessage     = fmt.Errorf("invalid signal message")
 	errConnectionNotInitialized = fmt.Errorf("connection not initialized")
 )
 
@@ -20,13 +21,13 @@ const (
 	SignalMessageRenegotiate        = "renegotiate"
 	SignalMessageTransceiverRequest = "transceiver_request"
 	SignalMessageCandidate          = "candidate"
-	SignalMessageSdp                = "sdp"
+	SignalMessageAnswer             = "answer"
+	SignalMessageOffer              = "offer"
+	SignalMessagePRAnswer           = "pranswer"
+	SignalMessageRollback           = "rollback"
 )
 
-type SignalMessage struct {
-	Type string      `json:"type"`
-	Data interface{} `json:"data"`
-}
+type SignalMessage = map[string]interface{}
 
 type SignalMessageTransceiver struct {
 	Kind webrtc.RTPCodecType         `json:"kind"`
@@ -135,7 +136,7 @@ func (peer *Peer) Channel() *webrtc.DataChannel {
 }
 
 func (peer *Peer) Send(data []byte) error {
-	if peer.connection == nil {
+	if peer.channel == nil {
 		return errConnectionNotInitialized
 	}
 	return peer.channel.Send(data)
@@ -209,25 +210,38 @@ func (peer *Peer) Signal(message SignalMessage) error {
 			return err
 		}
 	}
-	slog.Debug(fmt.Sprintf("%s: received signal type=%v", peer.id, message.Type))
-	dataBytes, err := json.Marshal(message.Data)
-	if err != nil {
-		return err
+	messageType, ok := message["type"].(string)
+	if !ok {
+		return errInvalidSignalMessageType
 	}
-	switch message.Type {
+	slog.Debug(fmt.Sprintf("%s: received signal message=%v", peer.id, message))
+	switch messageType {
 	case SignalMessageRenegotiate:
 		return peer.needsNegotiation()
 	case SignalMessageTransceiverRequest:
 		var transceiver SignalMessageTransceiver
-		if err := json.Unmarshal(dataBytes, &transceiver); err != nil {
-			return nil
-		}
 		_, err := peer.connection.AddTransceiverFromKind(transceiver.Kind, transceiver.Init...)
 		return err
 	case SignalMessageCandidate:
+		candidateJSON, ok := message["candidate"].(map[string]interface{})
+		if !ok {
+			return errInvalidSignalMessage
+		}
 		var candidate webrtc.ICECandidateInit
-		if err := json.Unmarshal(dataBytes, &candidate); err != nil {
-			return nil
+		if candidateRaw, ok := candidateJSON["candidate"].(string); ok {
+			candidate.Candidate = candidateRaw
+		} else {
+			return errInvalidSignalMessage
+		}
+		if sdpMidRaw, ok := candidateJSON["sdpMid"].(string); ok {
+			candidate.SDPMid = &sdpMidRaw
+		}
+		if sdpMLineIndexRaw, ok := candidateJSON["sdpMLineIndex"].(float64); ok {
+			sdpMLineIndex := uint16(sdpMLineIndexRaw)
+			candidate.SDPMLineIndex = &sdpMLineIndex
+		}
+		if usernameFragmentRaw, ok := candidateJSON["usernameFragment"].(string); ok {
+			candidate.UsernameFragment = &usernameFragmentRaw
 		}
 		if peer.connection.RemoteDescription() == nil {
 			peer.pendingCandidates = append(peer.pendingCandidates, candidate)
@@ -235,10 +249,20 @@ func (peer *Peer) Signal(message SignalMessage) error {
 		} else {
 			return peer.connection.AddICECandidate(candidate)
 		}
-	case SignalMessageSdp:
-		var sdp webrtc.SessionDescription
-		if err := json.Unmarshal(dataBytes, &sdp); err != nil {
-			return nil
+	case SignalMessageAnswer:
+		fallthrough
+	case SignalMessageOffer:
+		fallthrough
+	case SignalMessagePRAnswer:
+		fallthrough
+	case SignalMessageRollback:
+		sdpRaw, ok := message["sdp"].(string)
+		if !ok {
+			return errInvalidSignalMessage
+		}
+		sdp := webrtc.SessionDescription{
+			Type: webrtc.NewSDPType(messageType),
+			SDP:  sdpRaw,
 		}
 		slog.Debug(fmt.Sprintf("%s: setting remote sdp", peer.id))
 		if err := peer.connection.SetRemoteDescription(sdp); err != nil {
@@ -260,7 +284,7 @@ func (peer *Peer) Signal(message SignalMessage) error {
 		}
 		return nil
 	default:
-		slog.Debug(fmt.Sprintf("%s: invalid signal type: %v", peer.id, message.Type))
+		slog.Debug(fmt.Sprintf("%s: invalid signal type: %+v", peer.id, message))
 		return errInvalidSignalMessageType
 	}
 }
@@ -334,7 +358,7 @@ func (peer *Peer) negotiate() error {
 		return peer.createOffer()
 	} else {
 		return peer.onSignal(SignalMessage{
-			Type: SignalMessageRenegotiate,
+			"type": SignalMessageRenegotiate,
 		})
 	}
 }
@@ -351,15 +375,12 @@ func (peer *Peer) createOffer() error {
 	if err := peer.connection.SetLocalDescription(offer); err != nil {
 		return err
 	}
-	slog.Debug(fmt.Sprintf("%s: created offer", peer.id))
 	offerJSON, err := toJSON(offer)
 	if err != nil {
 		return err
 	}
-	return peer.onSignal(SignalMessage{
-		Type: SignalMessageSdp,
-		Data: offerJSON,
-	})
+	slog.Debug(fmt.Sprintf("%s: created offer: %+v", peer.id, offerJSON))
+	return peer.onSignal(offerJSON)
 }
 
 func (peer *Peer) createAnswer() error {
@@ -374,15 +395,12 @@ func (peer *Peer) createAnswer() error {
 	if err := peer.connection.SetLocalDescription(answer); err != nil {
 		return err
 	}
-	slog.Debug(fmt.Sprintf("%s: created answer", peer.id))
 	answerJSON, err := toJSON(answer)
 	if err != nil {
 		return err
 	}
-	return peer.onSignal(SignalMessage{
-		Type: SignalMessageSdp,
-		Data: answerJSON,
-	})
+	slog.Debug(fmt.Sprintf("%s: created answer: %+v", peer.id, answerJSON))
+	return peer.onSignal(answerJSON)
 }
 
 func (peer *Peer) connect() {
@@ -449,8 +467,8 @@ func (peer *Peer) onICECandidate(pendingCandidate *webrtc.ICECandidate) {
 			return
 		}
 		if err := peer.onSignal(SignalMessage{
-			Type: SignalMessageCandidate,
-			Data: iceCandidateInitJSON,
+			"type":      SignalMessageCandidate,
+			"candidate": iceCandidateInitJSON,
 		}); err != nil {
 			slog.Error(fmt.Sprintf("%s: error sending ice candidate: %s", peer.id, err))
 		}
