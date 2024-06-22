@@ -583,7 +583,7 @@ func (peer *Peer) onConnectionStateChange(pcs webrtc.PeerConnectionState) {
 }
 
 func (peer *Peer) onICECandidate(pendingCandidate *webrtc.ICECandidate) {
-	if pendingCandidate == nil {
+	if peer.connection == nil || pendingCandidate == nil {
 		return
 	}
 	if peer.connection.RemoteDescription() == nil {
