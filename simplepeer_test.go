@@ -33,9 +33,7 @@ func TestSimplePeer(t *testing.T) {
 			peer1Data <- message.Data
 		},
 		OnClose: func() {
-			go func() {
-				peer1Close <- true
-			}()
+			peer1Close <- true
 		},
 	})
 	peer2 = NewPeer(PeerOptions{
@@ -50,9 +48,7 @@ func TestSimplePeer(t *testing.T) {
 			peer2Data <- message.Data
 		},
 		OnClose: func() {
-			go func() {
-				peer2Close <- true
-			}()
+			peer2Close <- true
 		},
 	})
 	err := peer1.Init()
