@@ -428,14 +428,14 @@ func (peer *Peer) Close() error {
 
 func (peer *Peer) close(triggerCallbacks bool) error {
 	var err1, err2 error
-	if peer.connection != nil {
-		err1 = peer.connection.Close()
-		peer.connection = nil
+	if peer.channel != nil {
+		err1 = peer.channel.Close()
+		peer.channel = nil
 		triggerCallbacks = true
 	}
-	if peer.channel != nil {
-		err2 = peer.channel.Close()
-		peer.channel = nil
+	if peer.connection != nil {
+		err2 = peer.connection.Close()
+		peer.connection = nil
 		triggerCallbacks = true
 	}
 	if triggerCallbacks {
