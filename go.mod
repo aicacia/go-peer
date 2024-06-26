@@ -6,7 +6,7 @@ require (
 	github.com/aicacia/go-atomic-value v0.0.0-20240622130239-0836551b1902
 	github.com/aicacia/go-cslice v0.0.0-20240622125649-9914a113bdf2
 	github.com/google/uuid v1.6.0
-	github.com/pion/webrtc/v4 v4.0.0-beta.20
+	github.com/pion/webrtc/v4 v4.0.0-beta.21
 )
 
 require (

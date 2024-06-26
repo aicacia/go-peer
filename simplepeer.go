@@ -28,14 +28,12 @@ const (
 	SignalMessageRollback           = "rollback"
 )
 
-type SignalMessage = map[string]interface{}
-
 type SignalMessageTransceiver struct {
 	Kind webrtc.RTPCodecType         `json:"kind"`
 	Init []webrtc.RTPTransceiverInit `json:"init"`
 }
 
-type OnSignal func(message SignalMessage) error
+type OnSignal func(message map[string]interface{}) error
 type OnConnect func()
 type OnData func(message webrtc.DataChannelMessage)
 type OnError func(err error)
@@ -181,7 +179,7 @@ func (peer *Peer) AddTransceiverFromKind(kind webrtc.RTPCodecType, init ...webrt
 				"sendEncodings": transceiverInit.SendEncodings,
 			})
 		}
-		err := peer.onSignal.Load()(SignalMessage{
+		err := peer.onSignal.Load()(map[string]interface{}{
 			"type": SignalMessageTransceiverRequest,
 			"transceiverRequest": map[string]interface{}{
 				"kind": kind.String(),
@@ -211,7 +209,7 @@ func (peer *Peer) AddTransceiverFromTrack(track webrtc.TrackLocal, init ...webrt
 				"sendEncodings": transceiverInit.SendEncodings,
 			})
 		}
-		err := peer.onSignal.Load()(SignalMessage{
+		err := peer.onSignal.Load()(map[string]interface{}{
 			"type": SignalMessageTransceiverRequest,
 			"transceiverRequest": map[string]interface{}{
 				"kind": track.Kind().String(),
@@ -296,7 +294,7 @@ func (peer *Peer) OffTransceiver(fn OnTransceiver) {
 	})
 }
 
-func (peer *Peer) Signal(message SignalMessage) error {
+func (peer *Peer) Signal(message map[string]interface{}) error {
 	if peer.connection == nil {
 		err := peer.createPeer()
 		if err != nil {
@@ -493,7 +491,7 @@ func (peer *Peer) negotiate() error {
 	if peer.initiator {
 		return peer.createOffer()
 	} else {
-		return peer.onSignal.Load()(SignalMessage{
+		return peer.onSignal.Load()(map[string]interface{}{
 			"type":        SignalMessageRenegotiate,
 			"renegotiate": true,
 		})
@@ -612,7 +610,7 @@ func (peer *Peer) onICECandidate(pendingCandidate *webrtc.ICECandidate) {
 			peer.error(err)
 			return
 		}
-		err = peer.onSignal.Load()(SignalMessage{
+		err = peer.onSignal.Load()(map[string]interface{}{
 			"type":      SignalMessageCandidate,
 			"candidate": iceCandidateInitJSON,
 		})
