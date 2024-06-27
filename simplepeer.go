@@ -407,9 +407,8 @@ func (peer *Peer) Signal(message map[string]interface{}) error {
 		peer.pendingCandidates.Clear()
 		remoteDescription := peer.connection.RemoteDescription()
 		if remoteDescription == nil {
-			return webrtc.ErrNoRemoteDescription
-		}
-		if remoteDescription.Type == webrtc.SDPTypeOffer {
+			errs = append(errs, webrtc.ErrNoRemoteDescription)
+		} else if remoteDescription.Type == webrtc.SDPTypeOffer {
 			err := peer.createAnswer()
 			if err != nil {
 				errs = append(errs, err)
