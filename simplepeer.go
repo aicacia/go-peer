@@ -15,6 +15,7 @@ import (
 var (
 	errInvalidSignalMessageType = fmt.Errorf("invalid signal message type")
 	errInvalidSignalMessage     = fmt.Errorf("invalid signal message")
+	errInvalidSignalState       = fmt.Errorf("invalid signal state")
 	errConnectionNotInitialized = fmt.Errorf("connection not initialized")
 )
 
@@ -310,6 +311,9 @@ func (peer *Peer) Signal(message map[string]interface{}) error {
 	case SignalMessageRenegotiate:
 		return peer.needsNegotiation()
 	case SignalMessageTransceiverRequest:
+		if !peer.initiator {
+			return errInvalidSignalState
+		}
 		transceiverRaw, ok := message["transceiverRequest"].(map[string]interface{})
 		if !ok {
 			return errInvalidSignalMessage
@@ -478,12 +482,12 @@ func (peer *Peer) needsNegotiation() error {
 		return errConnectionNotInitialized
 	}
 	if peer.initiator {
-		return peer.negotiate()
+		return peer.Negotiate()
 	}
 	return nil
 }
 
-func (peer *Peer) negotiate() error {
+func (peer *Peer) Negotiate() error {
 	if peer.connection == nil {
 		return errConnectionNotInitialized
 	}
