@@ -1,11 +1,12 @@
 package simplepeer
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
-	"sync/atomic"
 
 	atomicvalue "github.com/aicacia/go-atomic-value"
 	"github.com/aicacia/go-cslice"
@@ -30,6 +31,8 @@ const (
 	SignalMessageRollback           = "rollback"
 )
 
+const maxChannelMessageSize = 16384
+
 type SignalMessageTransceiver struct {
 	Kind webrtc.RTPCodecType         `json:"kind"`
 	Init []webrtc.RTPTransceiverInit `json:"init"`
@@ -44,46 +47,41 @@ type OnTransceiver func(transceiver *webrtc.RTPTransceiver)
 type OnTrack func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver)
 
 type PeerOptions struct {
-	Id                          string
-	ChannelName                 string
-	ChannelConfig               *webrtc.DataChannelInit
-	UseInternalChannelForSignal bool
-	Tracks                      []webrtc.TrackLocal
-	Config                      *webrtc.Configuration
-	OfferConfig                 *webrtc.OfferOptions
-	AnswerConfig                *webrtc.AnswerOptions
-	OnSignal                    OnSignal
-	OnConnect                   OnConnect
-	OnInternalConnect           OnConnect
-	OnData                      OnData
-	OnError                     OnError
-	OnClose                     OnClose
-	OnTransceiver               OnTransceiver
-	OnTrack                     OnTrack
+	Id            string
+	ChannelName   string
+	ChannelConfig *webrtc.DataChannelInit
+	Tracks        []webrtc.TrackLocal
+	Config        *webrtc.Configuration
+	OfferConfig   *webrtc.OfferOptions
+	AnswerConfig  *webrtc.AnswerOptions
+	OnSignal      OnSignal
+	OnConnect     OnConnect
+	OnData        OnData
+	OnError       OnError
+	OnClose       OnClose
+	OnTransceiver OnTransceiver
+	OnTrack       OnTrack
 }
 
 type Peer struct {
-	id                          string
-	initiator                   bool
-	channelName                 string
-	channelConfig               *webrtc.DataChannelInit
-	channel                     *webrtc.DataChannel
-	useInternalChannelForSignal bool
-	internalChannel             *webrtc.DataChannel
-	internalChannelReady        *atomic.Bool
-	config                      webrtc.Configuration
-	connection                  *webrtc.PeerConnection
-	offerConfig                 *webrtc.OfferOptions
-	answerConfig                *webrtc.AnswerOptions
-	pendingCandidates           *cslice.CSlice[webrtc.ICECandidateInit]
-	onSignal                    *atomicvalue.AtomicValue[OnSignal]
-	onConnect                   *cslice.CSlice[OnConnect]
-	onInternalConnect           *cslice.CSlice[OnConnect]
-	onData                      *cslice.CSlice[OnData]
-	onError                     *cslice.CSlice[OnError]
-	onClose                     *cslice.CSlice[OnClose]
-	onTransceiver               *cslice.CSlice[OnTransceiver]
-	onTrack                     *cslice.CSlice[OnTrack]
+	id                string
+	initiator         bool
+	channelName       string
+	channelConfig     *webrtc.DataChannelInit
+	channel           *webrtc.DataChannel
+	writeBuffer       *bytes.Buffer
+	config            webrtc.Configuration
+	connection        *webrtc.PeerConnection
+	offerConfig       *webrtc.OfferOptions
+	answerConfig      *webrtc.AnswerOptions
+	pendingCandidates *cslice.CSlice[webrtc.ICECandidateInit]
+	onSignal          *atomicvalue.AtomicValue[OnSignal]
+	onConnect         *cslice.CSlice[OnConnect]
+	onData            *cslice.CSlice[OnData]
+	onError           *cslice.CSlice[OnError]
+	onClose           *cslice.CSlice[OnClose]
+	onTransceiver     *cslice.CSlice[OnTransceiver]
+	onTrack           *cslice.CSlice[OnTrack]
 }
 
 func NewPeer(options ...PeerOptions) *Peer {
@@ -91,16 +89,15 @@ func NewPeer(options ...PeerOptions) *Peer {
 		config: webrtc.Configuration{
 			ICEServers: []webrtc.ICEServer{},
 		},
-		internalChannelReady: &atomic.Bool{},
-		pendingCandidates:    &cslice.CSlice[webrtc.ICECandidateInit]{},
-		onSignal:             &atomicvalue.AtomicValue[OnSignal]{},
-		onConnect:            &cslice.CSlice[OnConnect]{},
-		onInternalConnect:    &cslice.CSlice[OnConnect]{},
-		onData:               &cslice.CSlice[OnData]{},
-		onError:              &cslice.CSlice[OnError]{},
-		onClose:              &cslice.CSlice[OnClose]{},
-		onTransceiver:        &cslice.CSlice[OnTransceiver]{},
-		onTrack:              &cslice.CSlice[OnTrack]{},
+		writeBuffer:       &bytes.Buffer{},
+		pendingCandidates: &cslice.CSlice[webrtc.ICECandidateInit]{},
+		onSignal:          &atomicvalue.AtomicValue[OnSignal]{},
+		onConnect:         &cslice.CSlice[OnConnect]{},
+		onData:            &cslice.CSlice[OnData]{},
+		onError:           &cslice.CSlice[OnError]{},
+		onClose:           &cslice.CSlice[OnClose]{},
+		onTransceiver:     &cslice.CSlice[OnTransceiver]{},
+		onTrack:           &cslice.CSlice[OnTrack]{},
 	}
 	for _, option := range options {
 		if option.Id != "" {
@@ -111,9 +108,6 @@ func NewPeer(options ...PeerOptions) *Peer {
 		}
 		if option.ChannelConfig != nil {
 			peer.channelConfig = option.ChannelConfig
-		}
-		if option.UseInternalChannelForSignal {
-			peer.useInternalChannelForSignal = option.UseInternalChannelForSignal
 		}
 		if option.Config != nil {
 			peer.config = *option.Config
@@ -129,9 +123,6 @@ func NewPeer(options ...PeerOptions) *Peer {
 		}
 		if option.OnConnect != nil {
 			peer.onConnect.Append(option.OnConnect)
-		}
-		if option.OnInternalConnect != nil {
-			peer.onInternalConnect.Append(option.OnInternalConnect)
 		}
 		if option.OnData != nil {
 			peer.onData.Append(option.OnData)
@@ -174,13 +165,63 @@ func (peer *Peer) Initiator() bool {
 	return peer.initiator
 }
 
-func (peer *Peer) Send(data []byte) error {
+func (peer *Peer) Send(bytes []byte) error {
 	if peer.channel == nil {
 		return errConnectionNotInitialized
 	}
-	return peer.channel.Send(data)
+	return peer.channel.Send(bytes)
 }
 
+func (peer *Peer) Write(bytes []byte) (int, error) {
+	if peer.channel == nil {
+		return peer.writeBuffer.Write(bytes)
+	} else {
+		if _, err := peer.writeBuffer.Write(bytes); err != nil {
+			return 0, err
+		}
+		return peer.Flush()
+	}
+}
+
+func (peer *Peer) Flush() (int, error) {
+	sent := 0
+	if bytesLeft := peer.writeBuffer.Len(); bytesLeft > 0 {
+		sendBuffer := make([]byte, maxChannelMessageSize)
+		for bytesLeft > 0 {
+			read, err := peer.writeBuffer.Read(sendBuffer)
+			if err != nil {
+				return sent, err
+			}
+			if err := peer.channel.Send(sendBuffer[:read]); err != nil {
+				return sent, err
+			}
+			sent += read
+			bytesLeft -= read
+		}
+		peer.writeBuffer.Reset()
+	}
+	return sent, nil
+}
+
+func (peer *Peer) Reader() io.ReadCloser {
+	pipeReader, pipeWriter := io.Pipe()
+	onData := func(message webrtc.DataChannelMessage) {
+		pipeWriter.Write(message.Data)
+	}
+	onClose := func() {
+		peer.OffData(onData)
+		if err := pipeWriter.Close(); err != nil {
+			peer.error(err)
+		}
+	}
+	peer.OnData(onData)
+
+	return &peerReader{
+		peer:       peer,
+		pipeReader: pipeReader,
+		onClose:    onClose,
+	}
+}
 func (peer *Peer) Init() error {
 	peer.initiator = true
 	err := peer.createPeer()
@@ -240,12 +281,8 @@ func (peer *Peer) OnConnect(fn OnConnect) {
 }
 
 func (peer *Peer) OffConnect(fn OnConnect) {
-	peer.onConnect.Range(func(index int, onConnect OnConnect) bool {
-		if &onConnect == &fn {
-			peer.onConnect.Remove(index)
-			return false
-		}
-		return true
+	peer.onConnect.Delete(func(index int, onConnect OnConnect) bool {
+		return &onConnect == &fn
 	})
 }
 
@@ -254,12 +291,8 @@ func (peer *Peer) OnData(fn OnData) {
 }
 
 func (peer *Peer) OffData(fn OnData) {
-	peer.onData.Range(func(index int, onData OnData) bool {
-		if &onData == &fn {
-			peer.onData.Remove(index)
-			return false
-		}
-		return true
+	peer.onData.Delete(func(index int, onData OnData) bool {
+		return &onData == &fn
 	})
 }
 
@@ -268,12 +301,8 @@ func (peer *Peer) OnError(fn OnError) {
 }
 
 func (peer *Peer) OffError(fn OnError) {
-	peer.onError.Range(func(index int, onError OnError) bool {
-		if &onError == &fn {
-			peer.onError.Remove(index)
-			return false
-		}
-		return true
+	peer.onError.Delete(func(index int, onError OnError) bool {
+		return &onError == &fn
 	})
 }
 
@@ -282,12 +311,8 @@ func (peer *Peer) OnClose(fn OnClose) {
 }
 
 func (peer *Peer) OffClose(fn OnClose) {
-	peer.onClose.Range(func(index int, onClose OnClose) bool {
-		if &onClose == &fn {
-			peer.onClose.Remove(index)
-			return false
-		}
-		return true
+	peer.onClose.Delete(func(index int, onClose OnClose) bool {
+		return &onClose == &fn
 	})
 }
 
@@ -296,12 +321,8 @@ func (peer *Peer) OnTransceiver(fn OnTransceiver) {
 }
 
 func (peer *Peer) OffTransceiver(fn OnTransceiver) {
-	peer.onTransceiver.Range(func(index int, onTransceiver OnTransceiver) bool {
-		if &onTransceiver == &fn {
-			peer.onTransceiver.Remove(index)
-			return false
-		}
-		return true
+	peer.onTransceiver.Delete(func(index int, onTransceiver OnTransceiver) bool {
+		return &onTransceiver == &fn
 	})
 }
 
@@ -310,28 +331,13 @@ func (peer *Peer) OnTrack(fn OnTrack) {
 }
 
 func (peer *Peer) OffTrack(fn OnTrack) {
-	peer.onTrack.Range(func(index int, onTrack OnTrack) bool {
-		if &onTrack == &fn {
-			peer.onTrack.Remove(index)
-			return false
-		}
-		return true
+	peer.onTrack.Delete(func(index int, onTrack OnTrack) bool {
+		return &onTrack == &fn
 	})
 }
 
 func (peer *Peer) signal(message map[string]interface{}) error {
-	if peer.useInternalChannelForSignal && peer.internalChannelReady.Load() {
-		messageBytes, err := json.Marshal(message)
-		if err != nil {
-			return err
-		}
-		if err := peer.internalChannel.Send(messageBytes); err != nil {
-			return err
-		}
-		return nil
-	} else {
-		return peer.onSignal.Load()(message)
-	}
+	return peer.onSignal.Load()(message)
 }
 
 func (peer *Peer) Signal(message map[string]interface{}) error {
@@ -470,11 +476,6 @@ func (peer *Peer) close(triggerCallbacks bool) error {
 		channelErr = peer.channel.Close()
 		peer.channel = nil
 	}
-	if peer.internalChannel != nil {
-		internalChannelErr = peer.internalChannel.Close()
-		peer.internalChannelReady.Store(false)
-		peer.internalChannel = nil
-	}
 	if peer.connection != nil {
 		connectionErr = peer.connection.Close()
 		peer.connection = nil
@@ -509,19 +510,6 @@ func (peer *Peer) createPeer() error {
 		peer.channel.OnError(peer.onDataChannelError)
 		peer.channel.OnOpen(peer.onDataChannelOpen)
 		peer.channel.OnMessage(peer.onDataChannelMessage)
-
-		if peer.useInternalChannelForSignal {
-			ordered := true
-			peer.internalChannel, err = peer.connection.CreateDataChannel("internal", &webrtc.DataChannelInit{
-				Ordered: &ordered,
-			})
-			if err != nil {
-				return err
-			}
-			peer.internalChannel.OnError(peer.onInternalDataChannelError)
-			peer.internalChannel.OnOpen(peer.onInternalDataChannelOpen)
-			peer.internalChannel.OnMessage(peer.onInternalDataChannelMessage)
-		}
 	} else {
 		peer.connection.OnDataChannel(peer.onDataChannel)
 	}
@@ -600,12 +588,6 @@ func (peer *Peer) connect() {
 	}
 }
 
-func (peer *Peer) internalConnect() {
-	for fn := range peer.onInternalConnect.Iter() {
-		go fn()
-	}
-}
-
 func (peer *Peer) error(err error) {
 	handled := false
 	for fn := range peer.onError.Iter() {
@@ -635,33 +617,15 @@ func (peer *Peer) onDataChannelError(err error) {
 
 func (peer *Peer) onDataChannelOpen() {
 	peer.connect()
+	if _, err := peer.Flush(); err != nil {
+		peer.error(err)
+	}
+
 }
 
 func (peer *Peer) onDataChannelMessage(message webrtc.DataChannelMessage) {
 	for fn := range peer.onData.Iter() {
 		go fn(message)
-	}
-}
-
-func (peer *Peer) onInternalDataChannelError(err error) {
-	peer.error(err)
-}
-
-func (peer *Peer) onInternalDataChannelOpen() {
-	peer.internalChannelReady.Store(true)
-	peer.internalConnect()
-}
-
-func (peer *Peer) onInternalDataChannelMessage(message webrtc.DataChannelMessage) {
-	var msg map[string]interface{}
-	if err := json.Unmarshal(message.Data, &msg); err != nil {
-		slog.Debug(fmt.Sprintf("%s: invalid internal data channel message: %s", peer.id, message.Data))
-		slog.Error(fmt.Sprintf("%s: invalid internal data channel message: %s", peer.id, err))
-		return
-	}
-	if err := peer.Signal(msg); err != nil {
-		slog.Error(fmt.Sprintf("%s: internal data channel message error: %s", peer.id, err))
-		return
 	}
 }
 
@@ -719,19 +683,10 @@ func (peer *Peer) onTrackRemote(track *webrtc.TrackRemote, receiver *webrtc.RTPR
 
 func (peer *Peer) onDataChannel(channel *webrtc.DataChannel) {
 	if channel != nil {
-		if channel.Label() == "internal" {
-			peer.internalChannel = channel
-			peer.internalChannel.OnError(peer.onInternalDataChannelError)
-			peer.internalChannel.OnOpen(peer.onInternalDataChannelOpen)
-			peer.internalChannel.OnMessage(peer.onInternalDataChannelMessage)
-			peer.useInternalChannelForSignal = true
-			peer.internalChannelReady.Store(true)
-		} else {
-			peer.channel = channel
-			peer.channel.OnError(peer.onDataChannelError)
-			peer.channel.OnOpen(peer.onDataChannelOpen)
-			peer.channel.OnMessage(peer.onDataChannelMessage)
-		}
+		peer.channel = channel
+		peer.channel.OnError(peer.onDataChannelError)
+		peer.channel.OnOpen(peer.onDataChannelOpen)
+		peer.channel.OnMessage(peer.onDataChannelMessage)
 	}
 }
 
@@ -756,4 +711,27 @@ func fromJSON[T any](v map[string]interface{}, value *T) error {
 		return err
 	}
 	return nil
+}
+
+type peerReader struct {
+	closed     bool
+	peer       *Peer
+	pipeReader *io.PipeReader
+	onClose    func()
+}
+
+func (reader *peerReader) Read(bytes []byte) (int, error) {
+	if reader.closed {
+		return 0, io.EOF
+	}
+	return reader.pipeReader.Read(bytes)
+}
+
+func (reader *peerReader) Close() error {
+	if reader.closed {
+		return io.EOF
+	}
+	reader.onClose()
+	reader.closed = true
+	return reader.pipeReader.Close()
 }

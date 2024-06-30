@@ -70,21 +70,40 @@ func TestSimplePeer(t *testing.T) {
 		t.Fatal("peers did not connect")
 	}
 
-	err = peer1.Send([]byte("Hello"))
-	if err != nil {
+	peer2Reader := peer2.Reader()
+	if _, err = peer1.Write([]byte("Hello")); err != nil {
 		t.Fatal(err)
 	}
-	peer2DataReceived := <-peer2Data
-	if string(peer2DataReceived) != "Hello" {
-		t.Fatalf("expected 'Hello', got '%s'", string(peer2DataReceived))
+	peer2Bytes := make([]byte, 5)
+	if _, err = peer2Reader.Read(peer2Bytes); err != nil {
+		t.Fatal(err)
+	} else if string(peer2Bytes) != "Hello" {
+		t.Fatalf("expected 'Hello', got '%s'", string(peer2Bytes))
 	}
-	err = peer2.Send([]byte("World"))
-	if err != nil {
+	if err := peer2Reader.Close(); err != nil {
 		t.Fatal(err)
 	}
-	peer1DataReceived := <-peer1Data
-	if string(peer1DataReceived) != "World" {
-		t.Fatalf("expected 'World', got '%s'", string(peer1DataReceived))
+	peer2DataBytes := <-peer2Data
+	if string(peer2DataBytes) != "Hello" {
+		t.Fatalf("expected 'Hello', got '%s'", string(peer2DataBytes))
+	}
+
+	peer1Reader := peer1.Reader()
+	if _, err = peer2.Write([]byte("World")); err != nil {
+		t.Fatal(err)
+	}
+	peer1Bytes := make([]byte, 5)
+	if _, err = peer1Reader.Read(peer1Bytes); err != nil {
+		t.Fatal(err)
+	} else if string(peer1Bytes) != "World" {
+		t.Fatalf("expected 'World', got '%s'", string(peer1Bytes))
+	}
+	if err := peer1Reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	peer1DataBytes := <-peer1Data
+	if string(peer1DataBytes) != "World" {
+		t.Fatalf("expected 'World', got '%s'", string(peer1DataBytes))
 	}
 
 	if err := peer1.Close(); err != nil {
@@ -182,16 +201,19 @@ func TestStreams(t *testing.T) {
 	}()
 
 	result := make(chan error)
+	done := atomic.Bool{}
 	sent := atomic.Int64{}
 	go func() {
 		file, err := os.Open(testStreamsDataIVFFilename)
 		if err != nil {
+			done.Store(true)
 			result <- err
 			return
 		}
 
 		ivf, _, err := ivfreader.NewWith(file)
 		if err != nil {
+			done.Store(true)
 			result <- err
 			return
 		}
@@ -199,14 +221,17 @@ func TestStreams(t *testing.T) {
 		for {
 			frame, _, err := ivf.ParseNextFrame()
 			if errors.Is(err, io.EOF) {
+				done.Store(true)
 				result <- nil
 				break
 			}
 			if err != nil {
+				done.Store(true)
 				result <- err
 				return
 			}
 			if err := videoTrack.WriteSample(media.Sample{Data: frame, Duration: time.Second}); err != nil {
+				done.Store(true)
 				result <- err
 				return
 			}
@@ -218,15 +243,19 @@ func TestStreams(t *testing.T) {
 	received := &atomic.Int64{}
 	rtpPacket := &rtp.Packet{}
 	peer2Track := <-peer2TrackChan
-	for received.Load() < sent.Load() {
-		count, _, err := peer2Track.Read(trackBuffer)
+	for done.Load() == false {
+		read, _, err := peer2Track.Read(trackBuffer)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = rtpPacket.Unmarshal(trackBuffer[:count]); err != nil {
+		if err = rtpPacket.Unmarshal(trackBuffer[:read]); err != nil {
 			t.Fatal(err)
 		}
 		received.Add(1)
+	}
+
+	if received.Load() < sent.Load() {
+		t.Fatalf("Received %d packets, but sent %d", received, sent)
 	}
 
 	err = <-result
