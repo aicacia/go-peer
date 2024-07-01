@@ -72,14 +72,14 @@ type Peer struct {
 	connection        *webrtc.PeerConnection
 	offerConfig       *webrtc.OfferOptions
 	answerConfig      *webrtc.AnswerOptions
-	pendingCandidates *cslice.CSlice[webrtc.ICECandidateInit]
-	onSignal          *atomicvalue.AtomicValue[OnSignal]
-	onConnect         *cslice.CSlice[OnConnect]
-	onData            *cslice.CSlice[OnData]
-	onError           *cslice.CSlice[OnError]
-	onClose           *cslice.CSlice[OnClose]
-	onTransceiver     *cslice.CSlice[OnTransceiver]
-	onTrack           *cslice.CSlice[OnTrack]
+	pendingCandidates cslice.CSlice[webrtc.ICECandidateInit]
+	onSignal          atomicvalue.AtomicValue[OnSignal]
+	onConnect         cslice.CSlice[OnConnect]
+	onData            cslice.CSlice[OnData]
+	onError           cslice.CSlice[OnError]
+	onClose           cslice.CSlice[OnClose]
+	onTransceiver     cslice.CSlice[OnTransceiver]
+	onTrack           cslice.CSlice[OnTrack]
 }
 
 func NewPeer(options ...PeerOptions) *Peer {
@@ -87,14 +87,6 @@ func NewPeer(options ...PeerOptions) *Peer {
 		config: webrtc.Configuration{
 			ICEServers: []webrtc.ICEServer{},
 		},
-		pendingCandidates: &cslice.CSlice[webrtc.ICECandidateInit]{},
-		onSignal:          &atomicvalue.AtomicValue[OnSignal]{},
-		onConnect:         &cslice.CSlice[OnConnect]{},
-		onData:            &cslice.CSlice[OnData]{},
-		onError:           &cslice.CSlice[OnError]{},
-		onClose:           &cslice.CSlice[OnClose]{},
-		onTransceiver:     &cslice.CSlice[OnTransceiver]{},
-		onTrack:           &cslice.CSlice[OnTrack]{},
 	}
 	for _, option := range options {
 		if option.Id != "" {
@@ -204,11 +196,7 @@ func (peer *Peer) Reader() io.ReadCloser {
 }
 func (peer *Peer) Init() error {
 	peer.initiator = true
-	err := peer.createPeer()
-	if err != nil {
-		return err
-	}
-	return peer.needsNegotiation()
+	return peer.createPeer()
 }
 
 func (peer *Peer) AddTransceiverFromKind(kind webrtc.RTPCodecType, init ...webrtc.RTPTransceiverInit) (*webrtc.RTPTransceiver, error) {
@@ -652,6 +640,7 @@ func (peer *Peer) onICECandidate(pendingCandidate *webrtc.ICECandidate) {
 }
 
 func (peer *Peer) onNegotiationNeeded() {
+	peer.needsNegotiation()
 }
 
 func (peer *Peer) onTrackRemote(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
