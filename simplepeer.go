@@ -1,7 +1,6 @@
 package simplepeer
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,7 +68,6 @@ type Peer struct {
 	channelName       string
 	channelConfig     *webrtc.DataChannelInit
 	channel           *webrtc.DataChannel
-	writeBuffer       *bytes.Buffer
 	config            webrtc.Configuration
 	connection        *webrtc.PeerConnection
 	offerConfig       *webrtc.OfferOptions
@@ -89,7 +87,6 @@ func NewPeer(options ...PeerOptions) *Peer {
 		config: webrtc.Configuration{
 			ICEServers: []webrtc.ICEServer{},
 		},
-		writeBuffer:       &bytes.Buffer{},
 		pendingCandidates: &cslice.CSlice[webrtc.ICECandidateInit]{},
 		onSignal:          &atomicvalue.AtomicValue[OnSignal]{},
 		onConnect:         &cslice.CSlice[OnConnect]{},
@@ -165,40 +162,23 @@ func (peer *Peer) Initiator() bool {
 	return peer.initiator
 }
 
-func (peer *Peer) Send(bytes []byte) error {
-	if peer.channel == nil {
-		return errConnectionNotInitialized
-	}
-	return peer.channel.Send(bytes)
-}
-
 func (peer *Peer) Write(bytes []byte) (int, error) {
-	if peer.channel == nil {
-		return peer.writeBuffer.Write(bytes)
-	} else {
-		if _, err := peer.writeBuffer.Write(bytes); err != nil {
-			return 0, err
-		}
-		return peer.Flush()
-	}
-}
-
-func (peer *Peer) Flush() (int, error) {
 	sent := 0
-	if bytesLeft := peer.writeBuffer.Len(); bytesLeft > 0 {
-		sendBuffer := make([]byte, maxChannelMessageSize)
+	if peer.channel == nil {
+		return sent, errConnectionNotInitialized
+	}
+	if bytesLeft := len(bytes); bytesLeft > 0 {
 		for bytesLeft > 0 {
-			read, err := peer.writeBuffer.Read(sendBuffer)
-			if err != nil {
+			count := bytesLeft
+			if count > maxChannelMessageSize {
+				count = maxChannelMessageSize
+			}
+			if err := peer.channel.Send(bytes[sent:(sent + count)]); err != nil {
 				return sent, err
 			}
-			if err := peer.channel.Send(sendBuffer[:read]); err != nil {
-				return sent, err
-			}
-			sent += read
-			bytesLeft -= read
+			bytesLeft -= count
+			sent += count
 		}
-		peer.writeBuffer.Reset()
 	}
 	return sent, nil
 }
@@ -617,9 +597,6 @@ func (peer *Peer) onDataChannelError(err error) {
 
 func (peer *Peer) onDataChannelOpen() {
 	peer.connect()
-	if _, err := peer.Flush(); err != nil {
-		peer.error(err)
-	}
 
 }
 
