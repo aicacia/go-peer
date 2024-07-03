@@ -510,11 +510,8 @@ func (peer *Peer) needsNegotiation() error {
 	if peer.connection == nil {
 		return errConnectionNotInitialized
 	}
-	if peer.initiator {
-		slog.Debug(fmt.Sprintf("%s: needs negotiation", peer.id))
-		return peer.negotiate()
-	}
-	return nil
+	slog.Debug(fmt.Sprintf("%s: needs negotiation", peer.id))
+	return peer.negotiate()
 }
 
 func (peer *Peer) negotiate() error {
