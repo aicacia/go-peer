@@ -154,6 +154,27 @@ func (peer *Peer) Initiator() bool {
 	return peer.initiator
 }
 
+func (peer *Peer) WriteText(text string) (int, error) {
+	sent := 0
+	if peer.channel == nil {
+		return sent, errConnectionNotInitialized
+	}
+	if bytesLeft := len(text); bytesLeft > 0 {
+		for bytesLeft > 0 {
+			count := bytesLeft
+			if count > maxChannelMessageSize {
+				count = maxChannelMessageSize
+			}
+			if err := peer.channel.SendText(text[sent:(sent + count)]); err != nil {
+				return sent, err
+			}
+			bytesLeft -= count
+			sent += count
+		}
+	}
+	return sent, nil
+}
+
 func (peer *Peer) Write(bytes []byte) (int, error) {
 	sent := 0
 	if peer.channel == nil {

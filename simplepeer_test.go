@@ -89,7 +89,7 @@ func TestSimplePeer(t *testing.T) {
 	}
 
 	peer1Reader := peer1.Reader()
-	if _, err = peer2.Write([]byte("World")); err != nil {
+	if _, err = peer2.WriteText("World"); err != nil {
 		t.Fatal(err)
 	}
 	peer1Bytes := make([]byte, 5)
