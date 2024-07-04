@@ -217,7 +217,10 @@ func (peer *Peer) Reader() io.ReadCloser {
 }
 func (peer *Peer) Init() error {
 	peer.initiator = true
-	return peer.createPeer()
+	if err := peer.createPeer(); err != nil {
+		return err
+	}
+	return peer.needsNegotiation()
 }
 
 func (peer *Peer) AddTransceiverFromKind(kind webrtc.RTPCodecType, init ...webrtc.RTPTransceiverInit) (*webrtc.RTPTransceiver, error) {
@@ -259,6 +262,16 @@ func (peer *Peer) AddTrack(track webrtc.TrackLocal) (*webrtc.RTPSender, error) {
 		return nil, err
 	}
 	return sender, peer.needsNegotiation()
+}
+
+func (peer *Peer) RemoveTrack(sender *webrtc.RTPSender) error {
+	if peer.connection == nil {
+		return errConnectionNotInitialized
+	}
+	if err := peer.connection.RemoveTrack(sender); err != nil {
+		return err
+	}
+	return peer.needsNegotiation()
 }
 
 func (peer *Peer) OnSignal(fn OnSignal) {
@@ -489,7 +502,6 @@ func (peer *Peer) createPeer() error {
 	}
 	peer.connection.OnConnectionStateChange(peer.onConnectionStateChange)
 	peer.connection.OnICECandidate(peer.onICECandidate)
-	peer.connection.OnNegotiationNeeded(peer.onNegotiationNeeded)
 	peer.connection.OnTrack(peer.onTrackRemote)
 	if peer.initiator {
 		peer.channel, err = peer.connection.CreateDataChannel(peer.channelName, peer.channelConfig)
@@ -510,7 +522,6 @@ func (peer *Peer) needsNegotiation() error {
 	if peer.connection == nil {
 		return errConnectionNotInitialized
 	}
-	slog.Debug(fmt.Sprintf("%s: needs negotiation", peer.id))
 	return peer.negotiate()
 }
 
@@ -518,6 +529,7 @@ func (peer *Peer) negotiate() error {
 	if peer.connection == nil {
 		return errConnectionNotInitialized
 	}
+	slog.Debug(fmt.Sprintf("%s: needs negotiation", peer.id))
 	if peer.initiator {
 		return peer.createOffer()
 	} else {
@@ -655,10 +667,6 @@ func (peer *Peer) onICECandidate(pendingCandidate *webrtc.ICECandidate) {
 			peer.error(err)
 		}
 	}
-}
-
-func (peer *Peer) onNegotiationNeeded() {
-	peer.needsNegotiation()
 }
 
 func (peer *Peer) onTrackRemote(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
