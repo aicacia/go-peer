@@ -1,4 +1,4 @@
-package simplepeer
+package peer
 
 import (
 	"errors"
@@ -15,7 +15,7 @@ import (
 	"github.com/pion/webrtc/v4/pkg/media/ivfreader"
 )
 
-func TestSimplePeer(t *testing.T) {
+func Testpeer(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	})))

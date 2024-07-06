@@ -1,4 +1,4 @@
-package simplepeer
+package peer
 
 import (
 	"encoding/json"
