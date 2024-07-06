@@ -30,7 +30,7 @@ const (
 	SignalMessageRollback           = "rollback"
 )
 
-const maxChannelMessageSize = 16384
+const defaultMaxChannelMessageSize = 16384
 
 type SignalMessageTransceiver struct {
 	Kind webrtc.RTPCodecType         `json:"kind"`
@@ -46,40 +46,42 @@ type OnTransceiver func(transceiver *webrtc.RTPTransceiver)
 type OnTrack func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver)
 
 type PeerOptions struct {
-	Id            string
-	ChannelName   string
-	ChannelConfig *webrtc.DataChannelInit
-	Tracks        []webrtc.TrackLocal
-	Config        *webrtc.Configuration
-	OfferConfig   *webrtc.OfferOptions
-	AnswerConfig  *webrtc.AnswerOptions
-	OnSignal      OnSignal
-	OnConnect     OnConnect
-	OnData        OnData
-	OnError       OnError
-	OnClose       OnClose
-	OnTransceiver OnTransceiver
-	OnTrack       OnTrack
+	Id                    string
+	ChannelName           string
+	ChannelConfig         *webrtc.DataChannelInit
+	Tracks                []webrtc.TrackLocal
+	Config                *webrtc.Configuration
+	OfferConfig           *webrtc.OfferOptions
+	AnswerConfig          *webrtc.AnswerOptions
+	MaxChannelMessageSize int
+	OnSignal              OnSignal
+	OnConnect             OnConnect
+	OnData                OnData
+	OnError               OnError
+	OnClose               OnClose
+	OnTransceiver         OnTransceiver
+	OnTrack               OnTrack
 }
 
 type Peer struct {
-	id                string
-	initiator         bool
-	channelName       string
-	channelConfig     *webrtc.DataChannelInit
-	channel           *webrtc.DataChannel
-	config            webrtc.Configuration
-	connection        *webrtc.PeerConnection
-	offerConfig       *webrtc.OfferOptions
-	answerConfig      *webrtc.AnswerOptions
-	pendingCandidates cslice.CSlice[webrtc.ICECandidateInit]
-	onSignal          atomicvalue.AtomicValue[OnSignal]
-	onConnect         cslice.CSlice[OnConnect]
-	onData            cslice.CSlice[OnData]
-	onError           cslice.CSlice[OnError]
-	onClose           cslice.CSlice[OnClose]
-	onTransceiver     cslice.CSlice[OnTransceiver]
-	onTrack           cslice.CSlice[OnTrack]
+	id                    string
+	initiator             bool
+	channelName           string
+	channelConfig         *webrtc.DataChannelInit
+	channel               *webrtc.DataChannel
+	config                webrtc.Configuration
+	connection            *webrtc.PeerConnection
+	offerConfig           *webrtc.OfferOptions
+	answerConfig          *webrtc.AnswerOptions
+	maxChannelMessageSize int
+	pendingCandidates     cslice.CSlice[webrtc.ICECandidateInit]
+	onSignal              atomicvalue.AtomicValue[OnSignal]
+	onConnect             cslice.CSlice[OnConnect]
+	onData                cslice.CSlice[OnData]
+	onError               cslice.CSlice[OnError]
+	onClose               cslice.CSlice[OnClose]
+	onTransceiver         cslice.CSlice[OnTransceiver]
+	onTrack               cslice.CSlice[OnTrack]
 }
 
 func NewPeer(options ...PeerOptions) *Peer {
@@ -87,6 +89,7 @@ func NewPeer(options ...PeerOptions) *Peer {
 		config: webrtc.Configuration{
 			ICEServers: []webrtc.ICEServer{},
 		},
+		maxChannelMessageSize: defaultMaxChannelMessageSize,
 	}
 	for _, option := range options {
 		if option.Id != "" {
@@ -106,6 +109,9 @@ func NewPeer(options ...PeerOptions) *Peer {
 		}
 		if option.OfferConfig != nil {
 			peer.offerConfig = option.OfferConfig
+		}
+		if option.MaxChannelMessageSize > 0 {
+			peer.maxChannelMessageSize = option.MaxChannelMessageSize
 		}
 		if option.OnSignal != nil {
 			peer.onSignal.Store(option.OnSignal)
@@ -162,8 +168,8 @@ func (peer *Peer) WriteText(text string) (int, error) {
 	if bytesLeft := len(text); bytesLeft > 0 {
 		for bytesLeft > 0 {
 			count := bytesLeft
-			if count > maxChannelMessageSize {
-				count = maxChannelMessageSize
+			if count > peer.maxChannelMessageSize {
+				count = peer.maxChannelMessageSize
 			}
 			if err := peer.channel.SendText(text[sent:(sent + count)]); err != nil {
 				return sent, err
@@ -183,8 +189,8 @@ func (peer *Peer) Write(bytes []byte) (int, error) {
 	if bytesLeft := len(bytes); bytesLeft > 0 {
 		for bytesLeft > 0 {
 			count := bytesLeft
-			if count > maxChannelMessageSize {
-				count = maxChannelMessageSize
+			if count > peer.maxChannelMessageSize {
+				count = peer.maxChannelMessageSize
 			}
 			if err := peer.channel.Send(bytes[sent:(sent + count)]); err != nil {
 				return sent, err
