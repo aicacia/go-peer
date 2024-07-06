@@ -106,14 +106,16 @@ func Testpeer(t *testing.T) {
 		t.Fatalf("expected 'World', got '%s'", string(peer1DataBytes))
 	}
 
+	peer2CloseSignal := peer2.CloseSignal()
 	if err := peer1.Close(); err != nil {
 		t.Fatal(err)
 	}
 
 	peer1Closed := <-peer1Close
 	peer2Closed := <-peer2Close
+	peer2CloseReceived := <-peer2CloseSignal
 
-	if !peer1Closed || !peer2Closed {
+	if !peer1Closed || !peer2Closed || !peer2CloseReceived {
 		t.Fatal("peers did not close")
 	}
 }

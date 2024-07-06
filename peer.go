@@ -156,6 +156,25 @@ func (peer *Peer) Channel() *webrtc.DataChannel {
 	return peer.channel
 }
 
+func (peer *Peer) Ready() bool {
+	return peer.channel != nil && peer.channel.ReadyState() == webrtc.DataChannelStateOpen
+}
+
+func (peer *Peer) Closed() bool {
+	return peer.connection == nil || peer.connection.ConnectionState() != webrtc.PeerConnectionStateConnected
+}
+
+func (peer *Peer) CloseSignal() chan bool {
+	ch := make(chan bool, 1)
+	var onClose OnClose
+	onClose = func() {
+		peer.OffClose(onClose)
+		ch <- true
+	}
+	peer.OnClose(onClose)
+	return ch
+}
+
 func (peer *Peer) Initiator() bool {
 	return peer.initiator
 }
