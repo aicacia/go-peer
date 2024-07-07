@@ -466,18 +466,20 @@ func (peer *Peer) Signal(message map[string]interface{}) error {
 			Type: webrtc.NewSDPType(messageType),
 			SDP:  sdpRaw,
 		}
-		slog.Debug(fmt.Sprintf("%s: setting remote sdp", peer.id))
+		slog.Debug(fmt.Sprintf("%s: setting remote sdp", peer.id), "type", messageType)
 		if err := peer.connection.SetRemoteDescription(sdp); err != nil {
 			return err
 		}
 		var errs []error
-		for candidate := range peer.pendingCandidates.Iter() {
-			if err := peer.connection.AddICECandidate(candidate); err != nil {
-				errs = append(errs, err)
-			}
-		}
-		peer.pendingCandidates.Clear()
 		remoteDescription := peer.connection.RemoteDescription()
+		if remoteDescription != nil {
+			for candidate := range peer.pendingCandidates.Iter() {
+				if err := peer.connection.AddICECandidate(candidate); err != nil {
+					errs = append(errs, err)
+				}
+			}
+			peer.pendingCandidates.Clear()
+		}
 		if remoteDescription == nil {
 			errs = append(errs, webrtc.ErrNoRemoteDescription)
 		} else if remoteDescription.Type == webrtc.SDPTypeOffer {
