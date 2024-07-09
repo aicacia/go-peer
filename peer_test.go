@@ -9,13 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/pion/webrtc/v4/pkg/media/ivfreader"
 )
 
-func Testpeer(t *testing.T) {
+func TestPeer(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	})))
@@ -181,7 +180,7 @@ func TestStreams(t *testing.T) {
 
 	videoTrack, videoTrackErr := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: trackCodec}, "video", "pion")
 	if videoTrackErr != nil {
-		panic(videoTrackErr)
+		t.Fatal(err)
 	}
 
 	peer2TrackChan := make(chan *webrtc.TrackRemote)
@@ -189,6 +188,10 @@ func TestStreams(t *testing.T) {
 		peer2TrackChan <- track
 	})
 	rtpSender, err := peer1.AddTrack(videoTrack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = peer2.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo, webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,66 +205,58 @@ func TestStreams(t *testing.T) {
 		}
 	}()
 
-	result := make(chan error)
-	done := atomic.Bool{}
 	sent := atomic.Int64{}
 	go func() {
+		defer peer1.RemoveTrack(rtpSender)
 		file, err := os.Open(testStreamsDataIVFFilename)
 		if err != nil {
-			done.Store(true)
-			result <- err
+			slog.Error("ivfreader", "err", err)
 			return
 		}
 
 		ivf, _, err := ivfreader.NewWith(file)
 		if err != nil {
-			done.Store(true)
-			result <- err
+			slog.Error("ivfreader", "err", err)
 			return
 		}
 
 		for {
 			frame, _, err := ivf.ParseNextFrame()
 			if errors.Is(err, io.EOF) {
-				done.Store(true)
-				result <- nil
 				break
 			}
 			if err != nil {
-				done.Store(true)
-				result <- err
+				slog.Error("ivfreader", "err", err)
 				return
 			}
 			if err := videoTrack.WriteSample(media.Sample{Data: frame, Duration: time.Second}); err != nil {
-				done.Store(true)
-				result <- err
+				slog.Error("ivfreader", "err", err)
 				return
 			}
 			sent.Add(1)
 		}
 	}()
 
-	trackBuffer := make([]byte, 1500)
-	received := &atomic.Int64{}
-	rtpPacket := &rtp.Packet{}
-	peer2Track := <-peer2TrackChan
-	for done.Load() == false {
-		read, _, err := peer2Track.Read(trackBuffer)
-		if err != nil {
-			t.Fatal(err)
+	var peer2Track *webrtc.TrackRemote
+	select {
+	case peer2Track = <-peer2TrackChan:
+	case <-time.After(time.Second):
+		t.Fatal("Timed out waiting for track")
+	}
+
+	received := atomic.Int64{}
+	for {
+		_, _, err := peer2Track.ReadRTP()
+		if errors.Is(err, io.EOF) {
+			break
 		}
-		if err = rtpPacket.Unmarshal(trackBuffer[:read]); err != nil {
+		if err != nil {
 			t.Fatal(err)
 		}
 		received.Add(1)
 	}
 
-	if received.Load() < sent.Load() {
-		t.Fatalf("Received %d packets, but sent %d", received, sent)
-	}
-
-	err = <-result
-	if err != nil {
-		t.Fatal(err)
+	if received.Load() == 0 || sent.Load() == 0 {
+		t.Fatalf("Received %d packets, but sent %d", received.Load(), sent.Load())
 	}
 }
