@@ -665,56 +665,24 @@ func (peer *Peer) onNegotiationNeeded() {
 	}
 }
 
-func (peer *Peer) onConnectionStateChange(pcs webrtc.PeerConnectionState) {
-	switch pcs {
-	case webrtc.PeerConnectionStateUnknown:
-		slog.Debug("connection state unknown", "peer", peer.id)
-	case webrtc.PeerConnectionStateNew:
-		slog.Debug("connection new", "peer", peer.id)
-	case webrtc.PeerConnectionStateConnecting:
-		slog.Debug("connecting", "peer", peer.id)
-	case webrtc.PeerConnectionStateConnected:
-		slog.Debug("connection established", "peer", peer.id)
+func (peer *Peer) onConnectionStateChange(state webrtc.PeerConnectionState) {
+	slog.Debug("connection state", "peer", peer.id, "state", state)
+	switch state {
 	case webrtc.PeerConnectionStateDisconnected:
-		slog.Debug("connection disconnected", "peer", peer.id)
-		peer.close(true)
+		fallthrough
 	case webrtc.PeerConnectionStateFailed:
-		slog.Debug("connection failed", "peer", peer.id)
-		peer.close(true)
+		fallthrough
 	case webrtc.PeerConnectionStateClosed:
-		slog.Debug("connection closed", "peer", peer.id)
 		peer.close(true)
 	}
 }
 
 func (peer *Peer) onICEGatheringStateChange(state webrtc.ICEGatheringState) {
-	switch state {
-	case webrtc.ICEGatheringStateNew:
-		slog.Debug("ice gathering state new", "peer", peer.id)
-	case webrtc.ICEGatheringStateGathering:
-		slog.Debug("ice gathering state gathering", "peer", peer.id)
-	case webrtc.ICEGatheringStateComplete:
-		slog.Debug("ice gathering state complete", "peer", peer.id)
-	}
+	slog.Debug("ice gathering state", "peer", peer.id, "state", state)
 }
 
 func (peer *Peer) onICEConnectionStateChange(state webrtc.ICEConnectionState) {
-	switch state {
-	case webrtc.ICEConnectionStateNew:
-		slog.Debug("ice connection state new", "peer", peer.id)
-	case webrtc.ICEConnectionStateChecking:
-		slog.Debug("ice connection state checking", "peer", peer.id)
-	case webrtc.ICEConnectionStateConnected:
-		slog.Debug("ice connection state connected", "peer", peer.id)
-	case webrtc.ICEConnectionStateCompleted:
-		slog.Debug("ice connection state completed", "peer", peer.id)
-	case webrtc.ICEConnectionStateFailed:
-		slog.Debug("ice connection state failed", "peer", peer.id)
-	case webrtc.ICEConnectionStateDisconnected:
-		slog.Debug("ice connection state disconnected", "peer", peer.id)
-	case webrtc.ICEConnectionStateClosed:
-		slog.Debug("ice connection state closed", "peer", peer.id)
-	}
+	slog.Debug("ice connection state", "peer", peer.id, "state", state)
 }
 
 func (peer *Peer) onICECandidate(pendingCandidate *webrtc.ICECandidate) {
@@ -745,16 +713,7 @@ func (peer *Peer) onTrackRemote(track *webrtc.TrackRemote, receiver *webrtc.RTPR
 }
 
 func (peer *Peer) onSignalingStateChange(state webrtc.SignalingState) {
-	switch state {
-	case webrtc.SignalingStateStable:
-		slog.Debug("signal state stable", "peer", peer.id)
-	case webrtc.SignalingStateHaveLocalOffer:
-		slog.Debug("signal state has local offer", "peer", peer.id)
-	case webrtc.SignalingStateHaveRemoteOffer:
-		slog.Debug("signal state has remote offer", "peer", peer.id)
-	case webrtc.SignalingStateClosed:
-		slog.Debug("signal state closed", "peer", peer.id)
-	}
+	slog.Debug("signal state", "peer", peer.id, "state", state)
 }
 
 func (peer *Peer) onDataChannel(channel *webrtc.DataChannel) {
