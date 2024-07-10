@@ -30,7 +30,12 @@ func TestPeer(t *testing.T) {
 	peer1 = NewPeer(PeerOptions{
 		Id: "peer1",
 		OnSignal: func(message map[string]interface{}) error {
-			return peer2.Signal(message)
+			time.AfterFunc(time.Millisecond*100, func() {
+				if err := peer2.Signal(message); err != nil {
+					t.Fatal(err)
+				}
+			})
+			return nil
 		},
 		OnConnect: func() {
 			peer1Connect <- true
@@ -45,7 +50,12 @@ func TestPeer(t *testing.T) {
 	peer2 = NewPeer(PeerOptions{
 		Id: "peer2",
 		OnSignal: func(message map[string]interface{}) error {
-			return peer1.Signal(message)
+			time.AfterFunc(time.Millisecond*100, func() {
+				if err := peer1.Signal(message); err != nil {
+					t.Fatal(err)
+				}
+			})
+			return nil
 		},
 		OnConnect: func() {
 			peer2Connect <- true
@@ -133,7 +143,12 @@ func TestStreams(t *testing.T) {
 	peer1 = NewPeer(PeerOptions{
 		Id: "peer1",
 		OnSignal: func(message map[string]interface{}) error {
-			return peer2.Signal(message)
+			time.AfterFunc(time.Millisecond*100, func() {
+				if err := peer2.Signal(message); err != nil {
+					t.Fatal(err)
+				}
+			})
+			return nil
 		},
 		OnConnect: func() {
 			peer1Connect <- true
@@ -142,7 +157,12 @@ func TestStreams(t *testing.T) {
 	peer2 = NewPeer(PeerOptions{
 		Id: "peer2",
 		OnSignal: func(message map[string]interface{}) error {
-			return peer1.Signal(message)
+			time.AfterFunc(time.Millisecond*100, func() {
+				if err := peer1.Signal(message); err != nil {
+					t.Fatal(err)
+				}
+			})
+			return nil
 		},
 		OnConnect: func() {
 			peer2Connect <- true
@@ -187,14 +207,15 @@ func TestStreams(t *testing.T) {
 	peer2.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 		peer2TrackChan <- track
 	})
+	peer1NegotiatedChan := make(chan bool)
+	peer1.OnNegotiated(func() {
+		peer1NegotiatedChan <- true
+	})
 	rtpSender, err := peer1.AddTrack(videoTrack)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = peer2.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo, webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly})
-	if err != nil {
-		t.Fatal(err)
-	}
+	<-peer1NegotiatedChan
 
 	go func() {
 		rtcpBuf := make([]byte, 1500)

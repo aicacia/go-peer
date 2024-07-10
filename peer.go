@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"sync/atomic"
-	"time"
 
 	atomicvalue "github.com/aicacia/go-atomic-value"
 	"github.com/aicacia/go-cslice"
@@ -46,6 +44,7 @@ type OnError func(err error)
 type OnClose func()
 type OnTransceiver func(transceiver *webrtc.RTPTransceiver)
 type OnTrack func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver)
+type OnNegotiated func()
 
 type PeerOptions struct {
 	Id                    string
@@ -63,6 +62,7 @@ type PeerOptions struct {
 	OnClose               OnClose
 	OnTransceiver         OnTransceiver
 	OnTrack               OnTrack
+	OnNegotiated          OnNegotiated
 }
 
 type Peer struct {
@@ -76,7 +76,6 @@ type Peer struct {
 	offerConfig           *webrtc.OfferOptions
 	answerConfig          *webrtc.AnswerOptions
 	maxChannelMessageSize int
-	negotiating           atomic.Bool
 	pendingCandidates     cslice.CSlice[webrtc.ICECandidateInit]
 	onSignal              atomicvalue.AtomicValue[OnSignal]
 	onConnect             cslice.CSlice[OnConnect]
@@ -85,6 +84,7 @@ type Peer struct {
 	onClose               cslice.CSlice[OnClose]
 	onTransceiver         cslice.CSlice[OnTransceiver]
 	onTrack               cslice.CSlice[OnTrack]
+	onNegotiated          cslice.CSlice[OnNegotiated]
 }
 
 func NewPeer(options ...PeerOptions) *Peer {
@@ -136,6 +136,9 @@ func NewPeer(options ...PeerOptions) *Peer {
 		}
 		if option.OnTrack != nil {
 			peer.onTrack.Append(option.OnTrack)
+		}
+		if option.OnNegotiated != nil {
+			peer.onNegotiated.Append(option.OnNegotiated)
 		}
 	}
 	if peer.channelName == "" {
@@ -245,19 +248,39 @@ func (peer *Peer) Reader() io.ReadCloser {
 }
 func (peer *Peer) Init() error {
 	peer.initiator = true
-	return peer.createPeer()
+	if err := peer.createPeer(); err != nil {
+		return err
+	}
+	return peer.negotiate("Init")
 }
 
 func (peer *Peer) AddTransceiverFromKind(kind webrtc.RTPCodecType, init ...webrtc.RTPTransceiverInit) (*webrtc.RTPTransceiver, error) {
 	if peer.connection == nil {
 		return nil, errConnectionNotInitialized
 	}
-	transceiver, err := peer.connection.AddTransceiverFromKind(kind, init...)
-	if err != nil {
-		return nil, err
+	if peer.initiator {
+		transceiver, err := peer.connection.AddTransceiverFromKind(kind, init...)
+		if err != nil {
+			return nil, err
+		}
+		peer.transceiver(transceiver)
+		return transceiver, peer.negotiate("AddTransceiverFromKind")
 	}
-	peer.transceiver(transceiver)
-	return transceiver, nil
+	initJSON := make([]map[string]interface{}, 0, len(init))
+	for _, transceiverInit := range init {
+		initJSON = append(initJSON, map[string]interface{}{
+			"direction":     transceiverInit.Direction.String(),
+			"sendEncodings": transceiverInit.SendEncodings,
+		})
+	}
+	err := peer.signal(map[string]interface{}{
+		"type": SignalMessageTransceiverRequest,
+		"transceiverRequest": map[string]interface{}{
+			"kind": kind.String(),
+			"init": initJSON,
+		},
+	})
+	return nil, err
 }
 
 func (peer *Peer) AddTrack(track webrtc.TrackLocal) (*webrtc.RTPSender, error) {
@@ -268,7 +291,7 @@ func (peer *Peer) AddTrack(track webrtc.TrackLocal) (*webrtc.RTPSender, error) {
 	if err != nil {
 		return nil, err
 	}
-	return sender, err
+	return sender, peer.negotiate("AddTrack")
 }
 
 func (peer *Peer) RemoveTrack(sender *webrtc.RTPSender) error {
@@ -278,7 +301,7 @@ func (peer *Peer) RemoveTrack(sender *webrtc.RTPSender) error {
 	if err := peer.connection.RemoveTrack(sender); err != nil {
 		return err
 	}
-	return nil
+	return peer.negotiate("RemoveTrack")
 }
 
 func (peer *Peer) OnSignal(fn OnSignal) {
@@ -345,6 +368,16 @@ func (peer *Peer) OffTrack(fn OnTrack) {
 	})
 }
 
+func (peer *Peer) OnNegotiated(fn OnNegotiated) {
+	peer.onNegotiated.Append(fn)
+}
+
+func (peer *Peer) OffNegotiated(fn OnNegotiated) {
+	peer.onNegotiated.Delete(func(index int, onNegotiated OnNegotiated) bool {
+		return &onNegotiated == &fn
+	})
+}
+
 func (peer *Peer) signal(message map[string]interface{}) error {
 	return peer.onSignal.Load()(message)
 }
@@ -362,7 +395,7 @@ func (peer *Peer) Signal(message map[string]interface{}) error {
 	slog.Debug("received signal message", "peer", peer.id, "type", messageType)
 	switch messageType {
 	case SignalMessageRenegotiate:
-		return peer.negotiate()
+		return peer.negotiate("signal")
 	case SignalMessageTransceiverRequest:
 		if !peer.initiator {
 			return errInvalidSignalState
@@ -430,7 +463,6 @@ func (peer *Peer) Signal(message map[string]interface{}) error {
 			return peer.connection.AddICECandidate(candidate)
 		}
 	case SignalMessageAnswer:
-		defer peer.negotiating.Store(false)
 		fallthrough
 	case SignalMessageOffer:
 		fallthrough
@@ -467,6 +499,7 @@ func (peer *Peer) Signal(message map[string]interface{}) error {
 				errs = append(errs, err)
 			}
 		}
+		peer.negotiated()
 		slog.Debug("set remote sdp complete", "peer", peer.id)
 		return errors.Join(errs...)
 	default:
@@ -476,10 +509,13 @@ func (peer *Peer) Signal(message map[string]interface{}) error {
 }
 
 func (peer *Peer) Close() error {
-	return peer.close(false)
+	return peer.close(true)
 }
 
 func (peer *Peer) close(triggerCallbacks bool) error {
+	if peer.channel == nil && peer.connection == nil {
+		return nil
+	}
 	var channelErr, internalChannelErr, connectionErr error
 	if peer.channel != nil {
 		channelErr = peer.channel.Close()
@@ -502,7 +538,6 @@ func (peer *Peer) createPeer() error {
 	if err != nil {
 		return err
 	}
-	slog.Debug("creating peer", "peer", peer.id)
 	peer.connection, err = webrtc.NewPeerConnection(peer.config)
 	if err != nil {
 		return err
@@ -523,40 +558,29 @@ func (peer *Peer) createPeer() error {
 	peer.connection.OnICEGatheringStateChange(peer.onICEGatheringStateChange)
 	peer.connection.OnICECandidate(peer.onICECandidate)
 	peer.connection.OnTrack(peer.onTrackRemote)
+	peer.connection.OnSignalingStateChange(peer.onSignalingStateChange)
 	slog.Debug("created peer", "peer", peer.id)
 	return nil
 }
 
-func (peer *Peer) negotiate() error {
+func (peer *Peer) negotiate(trigger string) error {
 	if peer.connection == nil {
 		return errConnectionNotInitialized
 	}
-	time.AfterFunc(0, func() {
-		if peer.negotiating.CompareAndSwap(false, true) {
-			slog.Debug("needs negotiation", "peer", peer.id)
-			var err error
-			if peer.initiator {
-				err = peer.createOffer()
-			} else {
-				err = peer.signal(map[string]interface{}{
-					"type":        SignalMessageRenegotiate,
-					"renegotiate": true,
-				})
-			}
-			if err != nil {
-				peer.error(err)
-			}
-		}
-		slog.Debug("already negotiating", "peer", peer.id)
+	slog.Debug("needs negotiation", "peer", peer.id, "trigger", trigger)
+	if peer.initiator {
+		return peer.createOffer()
+	}
+	return peer.signal(map[string]interface{}{
+		"type":        SignalMessageRenegotiate,
+		"renegotiate": true,
 	})
-	return nil
 }
 
 func (peer *Peer) createOffer() error {
 	if peer.connection == nil {
 		return errConnectionNotInitialized
 	}
-	slog.Debug("creating offer", "peer", peer.id)
 	offer, err := peer.connection.CreateOffer(peer.offerConfig)
 	if err != nil {
 		return err
@@ -576,7 +600,6 @@ func (peer *Peer) createAnswer() error {
 	if peer.connection == nil {
 		return errConnectionNotInitialized
 	}
-	slog.Debug("creating answer", "peer", peer.id)
 	answer, err := peer.connection.CreateAnswer(peer.answerConfig)
 	if err != nil {
 		return err
@@ -621,6 +644,12 @@ func (peer *Peer) track(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver)
 	}
 }
 
+func (peer *Peer) negotiated() {
+	for fn := range peer.onNegotiated.Iter() {
+		go fn()
+	}
+}
+
 func (peer *Peer) onDataChannelError(err error) {
 	peer.error(err)
 }
@@ -637,9 +666,6 @@ func (peer *Peer) onDataChannelMessage(message webrtc.DataChannelMessage) {
 }
 
 func (peer *Peer) onNegotiationNeeded() {
-	if err := peer.negotiate(); err != nil {
-		peer.error(err)
-	}
 }
 
 func (peer *Peer) onConnectionStateChange(pcs webrtc.PeerConnectionState) {
@@ -687,13 +713,10 @@ func (peer *Peer) onICEConnectionStateChange(state webrtc.ICEConnectionState) {
 		slog.Debug("ice connection state completed", "peer", peer.id)
 	case webrtc.ICEConnectionStateFailed:
 		slog.Debug("ice connection state failed", "peer", peer.id)
-		peer.close(true)
 	case webrtc.ICEConnectionStateDisconnected:
 		slog.Debug("ice connection state disconnected", "peer", peer.id)
-		peer.close(true)
 	case webrtc.ICEConnectionStateClosed:
 		slog.Debug("ice connection state closed", "peer", peer.id)
-		peer.close(true)
 	}
 }
 
@@ -703,25 +726,38 @@ func (peer *Peer) onICECandidate(pendingCandidate *webrtc.ICECandidate) {
 	}
 	if peer.connection.RemoteDescription() == nil {
 		peer.pendingCandidates.Append(pendingCandidate.ToJSON())
-	} else {
-		iceCandidateInit := pendingCandidate.ToJSON()
-		iceCandidateInitJSON, err := toJSON(iceCandidateInit)
-		if err != nil {
-			peer.error(err)
-			return
-		}
-		err = peer.signal(map[string]interface{}{
-			"type":      SignalMessageCandidate,
-			"candidate": iceCandidateInitJSON,
-		})
-		if err != nil {
-			peer.error(err)
-		}
+		return
+	}
+	iceCandidateInit := pendingCandidate.ToJSON()
+	iceCandidateInitJSON, err := toJSON(iceCandidateInit)
+	if err != nil {
+		peer.error(err)
+		return
+	}
+	err = peer.signal(map[string]interface{}{
+		"type":      SignalMessageCandidate,
+		"candidate": iceCandidateInitJSON,
+	})
+	if err != nil {
+		peer.error(err)
 	}
 }
 
 func (peer *Peer) onTrackRemote(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 	peer.track(track, receiver)
+}
+
+func (peer *Peer) onSignalingStateChange(state webrtc.SignalingState) {
+	switch state {
+	case webrtc.SignalingStateStable:
+		slog.Debug("signal state stable", "peer", peer.id)
+	case webrtc.SignalingStateHaveLocalOffer:
+		slog.Debug("signal state has local offer", "peer", peer.id)
+	case webrtc.SignalingStateHaveRemoteOffer:
+		slog.Debug("signal state has remote offer", "peer", peer.id)
+	case webrtc.SignalingStateClosed:
+		slog.Debug("signal state closed", "peer", peer.id)
+	}
 }
 
 func (peer *Peer) onDataChannel(channel *webrtc.DataChannel) {
