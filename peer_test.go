@@ -11,7 +11,6 @@ import (
 
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
-	"github.com/pion/webrtc/v4/pkg/media/ivfreader"
 )
 
 func TestPeer(t *testing.T) {
@@ -129,8 +128,6 @@ func TestPeer(t *testing.T) {
 	}
 }
 
-const testStreamsDataIVFFilename = "file_example_MP4_480_1_5MG.ivf"
-
 func TestStreams(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
@@ -176,29 +173,7 @@ func TestStreams(t *testing.T) {
 	<-peer1Connect
 	<-peer2Connect
 
-	file, err := os.Open(testStreamsDataIVFFilename)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, header, err := ivfreader.NewWith(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var trackCodec string
-	switch header.FourCC {
-	case "AV01":
-		trackCodec = webrtc.MimeTypeAV1
-	case "VP90":
-		trackCodec = webrtc.MimeTypeVP9
-	case "VP80":
-		trackCodec = webrtc.MimeTypeVP8
-	default:
-		t.Fatalf("Unable to handle FourCC %s", header.FourCC)
-	}
-
-	videoTrack, videoTrackErr := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: trackCodec}, "video", "pion")
+	videoTrack, videoTrackErr := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP9}, "video", "peer")
 	if videoTrackErr != nil {
 		t.Fatal(err)
 	}
@@ -229,28 +204,8 @@ func TestStreams(t *testing.T) {
 	sent := atomic.Int64{}
 	go func() {
 		defer peer1.RemoveTrack(rtpSender)
-		file, err := os.Open(testStreamsDataIVFFilename)
-		if err != nil {
-			slog.Error("ivfreader", "err", err)
-			return
-		}
-
-		ivf, _, err := ivfreader.NewWith(file)
-		if err != nil {
-			slog.Error("ivfreader", "err", err)
-			return
-		}
-
-		for {
-			frame, _, err := ivf.ParseNextFrame()
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			if err != nil {
-				slog.Error("ivfreader", "err", err)
-				return
-			}
-			if err := videoTrack.WriteSample(media.Sample{Data: frame, Duration: time.Second}); err != nil {
+		for i := 0; i < 100; i++ {
+			if err := videoTrack.WriteSample(media.Sample{Data: []byte{0x00}, Duration: time.Second}); err != nil {
 				slog.Error("ivfreader", "err", err)
 				return
 			}
@@ -277,7 +232,7 @@ func TestStreams(t *testing.T) {
 		received.Add(1)
 	}
 
-	if received.Load() == 0 || sent.Load() == 0 {
+	if sent.Load() == 0 || received.Load() != sent.Load() {
 		t.Fatalf("Received %d packets, but sent %d", received.Load(), sent.Load())
 	}
 }
