@@ -389,7 +389,7 @@ func (peer *Peer) Signal(message map[string]interface{}) error {
 	slog.Debug("received signal message", "peer", peer.id, "type", messageType)
 	switch messageType {
 	case SignalMessageRenegotiate:
-		return peer.negotiate()
+		return peer.Negotiate()
 	case SignalMessageTransceiverRequest:
 		if !peer.initiator {
 			return errInvalidSignalState
@@ -557,10 +557,7 @@ func (peer *Peer) createPeer() error {
 	return nil
 }
 
-func (peer *Peer) negotiate() error {
-	if peer.connection == nil {
-		return errConnectionNotInitialized
-	}
+func (peer *Peer) Negotiate() error {
 	slog.Debug("needs negotiation", "peer", peer.id)
 	if peer.initiator {
 		return peer.createOffer()
@@ -660,7 +657,7 @@ func (peer *Peer) onDataChannelMessage(message webrtc.DataChannelMessage) {
 }
 
 func (peer *Peer) onNegotiationNeeded() {
-	if err := peer.negotiate(); err != nil {
+	if err := peer.Negotiate(); err != nil {
 		peer.error(err)
 	}
 }
@@ -714,6 +711,9 @@ func (peer *Peer) onTrackRemote(track *webrtc.TrackRemote, receiver *webrtc.RTPR
 
 func (peer *Peer) onSignalingStateChange(state webrtc.SignalingState) {
 	slog.Debug("signal state", "peer", peer.id, "state", state)
+	if state == webrtc.SignalingStateHaveLocalOffer {
+
+	}
 }
 
 func (peer *Peer) onDataChannel(channel *webrtc.DataChannel) {
