@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math/rand"
 	"os"
 	"sync/atomic"
 	"testing"
@@ -29,7 +30,7 @@ func TestPeer(t *testing.T) {
 	peer1 = NewPeer(PeerOptions{
 		Id: "peer1",
 		OnSignal: func(message map[string]interface{}) error {
-			time.AfterFunc(time.Millisecond*100, func() {
+			time.AfterFunc(time.Millisecond*(10+time.Duration(rand.Intn(90))), func() {
 				if err := peer2.Signal(message); err != nil {
 					t.Fatal(err)
 				}
@@ -49,7 +50,7 @@ func TestPeer(t *testing.T) {
 	peer2 = NewPeer(PeerOptions{
 		Id: "peer2",
 		OnSignal: func(message map[string]interface{}) error {
-			time.AfterFunc(time.Millisecond*100, func() {
+			time.AfterFunc(time.Millisecond*(10+time.Duration(rand.Intn(90))), func() {
 				if err := peer1.Signal(message); err != nil {
 					t.Fatal(err)
 				}
@@ -135,12 +136,14 @@ func TestStreams(t *testing.T) {
 
 	peer1Connect := make(chan bool)
 	peer2Connect := make(chan bool)
+	peer1Close := make(chan bool)
+	peer2Close := make(chan bool)
 
 	var peer1, peer2 *Peer
 	peer1 = NewPeer(PeerOptions{
 		Id: "peer1",
 		OnSignal: func(message map[string]interface{}) error {
-			time.AfterFunc(time.Millisecond*100, func() {
+			time.AfterFunc(time.Millisecond*(10+time.Duration(rand.Intn(90))), func() {
 				if err := peer2.Signal(message); err != nil {
 					t.Fatal(err)
 				}
@@ -150,11 +153,14 @@ func TestStreams(t *testing.T) {
 		OnConnect: func() {
 			peer1Connect <- true
 		},
+		OnClose: func() {
+			peer1Close <- true
+		},
 	})
 	peer2 = NewPeer(PeerOptions{
 		Id: "peer2",
 		OnSignal: func(message map[string]interface{}) error {
-			time.AfterFunc(time.Millisecond*100, func() {
+			time.AfterFunc(time.Millisecond*(10+time.Duration(rand.Intn(90))), func() {
 				if err := peer1.Signal(message); err != nil {
 					t.Fatal(err)
 				}
@@ -163,6 +169,9 @@ func TestStreams(t *testing.T) {
 		},
 		OnConnect: func() {
 			peer2Connect <- true
+		},
+		OnClose: func() {
+			peer2Close <- true
 		},
 	})
 	err := peer1.Init()
@@ -204,7 +213,7 @@ func TestStreams(t *testing.T) {
 	sent := atomic.Int64{}
 	go func() {
 		defer peer1.RemoveTrack(rtpSender)
-		for i := 0; i < 100; i++ {
+		for i := 0; i < 90; i++ {
 			if err := videoTrack.WriteSample(media.Sample{Data: []byte{0x00}, Duration: time.Second}); err != nil {
 				slog.Error("ivfreader", "err", err)
 				return

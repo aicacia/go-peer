@@ -1,5 +1,5 @@
-github.com/aicacia/go-atomic-value v0.0.0-20240622130239-0836551b1902 h1:AfUrk34miB8iEPqRA0uG1aCsVveUUiu11N/mgzraxzs=
-github.com/aicacia/go-atomic-value v0.0.0-20240622130239-0836551b1902/go.mod h1:d29Khs3KPw2R3CBaEsTUz4e4USWHjJNyX7OknMgNgUU=
+github.com/aicacia/go-atomic-value v0.0.0-20240711090356-37ccff13e4eb h1:HxopNH79NslgrmaQ7l+1O8VjXK87peVJWXemWBiBdSc=
+github.com/aicacia/go-atomic-value v0.0.0-20240711090356-37ccff13e4eb/go.mod h1:d29Khs3KPw2R3CBaEsTUz4e4USWHjJNyX7OknMgNgUU=
 github.com/aicacia/go-cslice v0.0.0-20240630135950-7315620337dd h1:vLr0GBzsXsdOOGTcG+lSPrYFncCkpkO57mqpoLWS1Yw=
 github.com/aicacia/go-cslice v0.0.0-20240630135950-7315620337dd/go.mod h1:rH/0o6RePUY2fzaaDvqfceMe+61GcVc9EN/RorXAOds=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

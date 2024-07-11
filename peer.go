@@ -45,6 +45,7 @@ type OnClose func()
 type OnTransceiver func(transceiver *webrtc.RTPTransceiver)
 type OnTrack func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver)
 type OnNegotiated func()
+type SDPTransform func(sdp string) string
 
 type PeerOptions struct {
 	Id                    string
@@ -63,6 +64,7 @@ type PeerOptions struct {
 	OnTransceiver         OnTransceiver
 	OnTrack               OnTrack
 	OnNegotiated          OnNegotiated
+	SDPTransform          SDPTransform
 }
 
 type Peer struct {
@@ -78,6 +80,7 @@ type Peer struct {
 	maxChannelMessageSize int
 	pendingCandidates     cslice.CSlice[webrtc.ICECandidateInit]
 	onSignal              atomicvalue.AtomicValue[OnSignal]
+	sdpTransform          atomicvalue.AtomicValue[SDPTransform]
 	onConnect             cslice.CSlice[OnConnect]
 	onData                cslice.CSlice[OnData]
 	onError               cslice.CSlice[OnError]
@@ -94,6 +97,7 @@ func NewPeer(options ...PeerOptions) *Peer {
 		},
 		maxChannelMessageSize: defaultMaxChannelMessageSize,
 	}
+	setSDPTransform := false
 	for _, option := range options {
 		if option.Id != "" {
 			peer.id = option.Id
@@ -118,6 +122,10 @@ func NewPeer(options ...PeerOptions) *Peer {
 		}
 		if option.OnSignal != nil {
 			peer.onSignal.Store(option.OnSignal)
+		}
+		if option.SDPTransform != nil {
+			peer.sdpTransform.Store(option.SDPTransform)
+			setSDPTransform = true
 		}
 		if option.OnConnect != nil {
 			peer.onConnect.Append(option.OnConnect)
@@ -147,6 +155,9 @@ func NewPeer(options ...PeerOptions) *Peer {
 	if peer.id == "" {
 		peer.id = uuid.New().String()
 	}
+	if !setSDPTransform {
+		peer.sdpTransform.Store(defaultSDPTransform)
+	}
 	return &peer
 }
 
@@ -162,16 +173,35 @@ func (peer *Peer) Channel() *webrtc.DataChannel {
 	return peer.channel
 }
 
-func (peer *Peer) Ready() bool {
+func (peer *Peer) Connected() bool {
 	return peer.channel != nil && peer.channel.ReadyState() == webrtc.DataChannelStateOpen
 }
 
 func (peer *Peer) Closed() bool {
-	return peer.connection == nil || peer.connection.ConnectionState() != webrtc.PeerConnectionStateConnected
+	return peer.connection == nil || peer.connection.ConnectionState() == webrtc.PeerConnectionStateClosed
+}
+
+func (peer *Peer) ConnectSignal() chan bool {
+	ch := make(chan bool, 1)
+	if peer.Connected() {
+		ch <- true
+		return ch
+	}
+	var onConnect OnConnect
+	onConnect = func() {
+		peer.OffConnect(onConnect)
+		ch <- true
+	}
+	peer.OnConnect(onConnect)
+	return ch
 }
 
 func (peer *Peer) CloseSignal() chan bool {
 	ch := make(chan bool, 1)
+	if peer.Closed() {
+		ch <- true
+		return ch
+	}
 	var onClose OnClose
 	onClose = func() {
 		peer.OffClose(onClose)
@@ -300,6 +330,10 @@ func (peer *Peer) RemoveTrack(sender *webrtc.RTPSender) error {
 
 func (peer *Peer) OnSignal(fn OnSignal) {
 	peer.onSignal.Store(fn)
+}
+
+func (peer *Peer) SDPTransform(fn SDPTransform) {
+	peer.sdpTransform.Store(fn)
 }
 
 func (peer *Peer) OnConnect(fn OnConnect) {
@@ -576,6 +610,7 @@ func (peer *Peer) createOffer() error {
 	if err != nil {
 		return err
 	}
+	offer.SDP = peer.sdpTransform.Load()(offer.SDP)
 	if err := peer.connection.SetLocalDescription(offer); err != nil {
 		return err
 	}
@@ -584,6 +619,9 @@ func (peer *Peer) createOffer() error {
 		return err
 	}
 	slog.Debug("created offer", "peer", peer.id)
+	if peer.connection.ICEGatheringState() != webrtc.ICEGatheringStateComplete {
+		<-webrtc.GatheringCompletePromise(peer.connection)
+	}
 	return peer.signal(offerJSON)
 }
 
@@ -595,6 +633,7 @@ func (peer *Peer) createAnswer() error {
 	if err != nil {
 		return err
 	}
+	answer.SDP = peer.sdpTransform.Load()(answer.SDP)
 	if err := peer.connection.SetLocalDescription(answer); err != nil {
 		return err
 	}
@@ -603,6 +642,9 @@ func (peer *Peer) createAnswer() error {
 		return err
 	}
 	slog.Debug("created answer", "peer", peer.id)
+	if peer.connection.ICEGatheringState() != webrtc.ICEGatheringStateComplete {
+		<-webrtc.GatheringCompletePromise(peer.connection)
+	}
 	return peer.signal(answerJSON)
 }
 
@@ -686,10 +728,6 @@ func (peer *Peer) onICECandidate(pendingCandidate *webrtc.ICECandidate) {
 	if peer.connection == nil || pendingCandidate == nil {
 		return
 	}
-	if peer.connection.RemoteDescription() == nil {
-		peer.pendingCandidates.Append(pendingCandidate.ToJSON())
-		return
-	}
 	iceCandidateInit := pendingCandidate.ToJSON()
 	iceCandidateInitJSON, err := toJSON(iceCandidateInit)
 	if err != nil {
@@ -711,9 +749,6 @@ func (peer *Peer) onTrackRemote(track *webrtc.TrackRemote, receiver *webrtc.RTPR
 
 func (peer *Peer) onSignalingStateChange(state webrtc.SignalingState) {
 	slog.Debug("signal state", "peer", peer.id, "state", state)
-	if state == webrtc.SignalingStateHaveLocalOffer {
-
-	}
 }
 
 func (peer *Peer) onDataChannel(channel *webrtc.DataChannel) {
@@ -769,4 +804,8 @@ func (reader *peerReader) Close() error {
 	reader.onClose()
 	reader.closed = true
 	return reader.pipeReader.Close()
+}
+
+func defaultSDPTransform(sdp string) string {
+	return sdp
 }
